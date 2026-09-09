@@ -1,6 +1,9 @@
 import os
 import pickle
+import sys
 from datetime import datetime, timedelta
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import lightning.pytorch as pl
 import matplotlib.pyplot as plt
@@ -28,58 +31,13 @@ TARGET = "Target"
 GROUP = "symbol"
 TIMEIDX = "timeidx"
 DATE_COL = "date"
-MAX_ENCODER_LENGTH = 32
+MAX_ENCODER_LENGTH = 20  # Shortened from 32 to focus on active signal horizon
 MAX_PRED_LENGTH = 1
 EMBARGO_HOURS = 2
 RESOLUTION = "1D"
 DAYS = 365
 TOTAL_CHUNKS = 5
 END_DATE = TODAY = datetime.now()
-
-# Scan the univrse, screen the right symbols, download the historical data for timedelta greater than one day
-all_items = os.listdir(HISTORICAL_DATA_PATH)
-if all_items:
-    first_item_path = os.path.join(HISTORICAL_DATA_PATH, all_items[0])
-    if os.path.isfile(first_item_path):
-        print("Historical data files found")
-        raw_time = os.path.getctime(first_item_path)
-        file_creation_date = datetime.fromtimestamp(raw_time).date()
-
-        target_date = TODAY.date()
-
-        time_difference = target_date - file_creation_date
-        print(f"Time difference in creation and today:{time_difference}")
-        if time_difference > timedelta(30):
-            print("Data stale....\nDownloading fresh data......")
-            failed_symbols = save_histortrical_data(
-                resolution=RESOLUTION,
-                DAYS=DAYS,
-                total_chunks=TOTAL_CHUNKS,
-                end_date=END_DATE,
-            )
-
-            if failed_symbols is not None:
-                print(len(failed_symbols))
-                for fs in failed_symbols:
-                    print(fs, "\t")
-
-            # downloading/Updating the benchmark index historical data
-            _ = save_benchmark_data(
-                resolution=RESOLUTION,
-                DAYS=DAYS,
-                total_chunks=TOTAL_CHUNKS,
-                end_date=END_DATE,
-            )
-
-# accessing the benchmark_data file
-benchmark_df = pd.read_parquet("Data/historical_data/data/NSE_NIFTY50-INDEX.parquet")
-
-# build the training dataset -> combine the index data as well all the symbol data, feuture engineer, labeling and target formation
-df, _ = build_training_set(snapshot_date=datetime.strftime(TODAY, "%Y-%m-%d"))
-float64_cols = df.select_dtypes(include=["float64"]).columns
-df[float64_cols] = df[float64_cols].astype(np.float32)
-print(f"\t \t {len(df)} \t \t")
-df = df.sort_values(by=["symbol", "Datetime"])
 
 features = [
     "Intraday_Spread",
@@ -90,16 +48,10 @@ features = [
     "relative_strength_120d",
     "Vol_Percentile_Rank",
     "Beta_60D",
+    "Pct_52W_High",
+    "Returns_5D",
+    "Intraday_Return",
 ]
-
-df[features] = df[features].astype(np.float32)
-df.dropna(inplace=True)
-
-
-def rebuild_time_idx(df, symbol_col="symbol"):
-    df = df.sort_values([symbol_col, "Datetime"])
-    df["timeidx"] = df.groupby(symbol_col).cumcount()
-    return df
 
 
 def build_dataset(train_df, test_df):
@@ -121,10 +73,10 @@ def build_dataset(train_df, test_df):
             "Vol_Percentile_Rank",
             "Beta_60D",
         ],
-        target_normalizer=TorchNormalizer(method="robust"),
+        target_normalizer=TorchNormalizer(method="identity"),
         allow_missing_timesteps=True,
         add_relative_time_idx=True,
-        add_target_scales=True,
+        add_target_scales=False,
     )
 
     validation = training.from_dataset(
@@ -133,47 +85,36 @@ def build_dataset(train_df, test_df):
         stop_randomization=True,
     )
 
-    dataset_indices = training.index["index_start"].values
-    target_tensor = training.data["target"][0]
-    target_values = target_tensor[dataset_indices].numpy().reshape(-1)
-
-    labels = (target_values > 0).astype(int)
-    class_counts = np.bincount(labels, minlength=2)
-    class_weights = 1.0 / np.maximum(class_counts, 1)
-    weights_aligned = class_weights[labels]
-
-    sampler = WeightedRandomSampler(
-        weights=torch.DoubleTensor(weights_aligned),
-        num_samples=len(training),
-        replacement=True,
-    )
-
     train_dataloader = training.to_dataloader(
-        train=False, batch_size=256, num_workers=0, sampler=sampler
+        train=True, batch_size=256, num_workers=0, shuffle=True
     )
     validation_dataloader = validation.to_dataloader(
-        train=False, batch_size=256, num_workers=0
+        train=False, batch_size=256, num_workers=0, shuffle=False
     )
-    print("class_counts:", class_counts)
     return training, validation, train_dataloader, validation_dataloader
 
 
 def model_and_trainer_setup(training: TimeSeriesDataSet):
     model = TemporalFusionTransformer.from_dataset(
         training,
-        hidden_size=128,
-        attention_head_size=4,
-        dropout=0.1,
-        hidden_continuous_size=16,
+        hidden_size=32,  # Down from 128 (reduces parameter bloat)
+        attention_head_size=2,  # Down from 4
+        dropout=0.25,  # Up from 0.1 (stronger regularization)
+        hidden_continuous_size=8,  # Down from 16
         loss=QuantileLoss(quantiles=[0.1, 0.5, 0.9]),
-        learning_rate=3e-4,
+        learning_rate=7e-4,  # Slightly higher initial rate
         optimizer="adam",
-        reduce_on_plateau_patience=5,
+        reduce_on_plateau_patience=2,  # Faster decay upon plateau
     )
-    early_stop = EarlyStopping(monitor="val_loss", patience=15, mode="min")
-    # training and validation
+
+    early_stop = EarlyStopping(
+        monitor="val_loss",
+        patience=6,  # Down from 15 (stops before noise memorization)
+        mode="min",
+    )
+
     trainer = pl.Trainer(
-        max_epochs=100,
+        max_epochs=35,  # Down from 100
         accelerator="mps"
         if torch.backends.mps.is_available()
         else "cuda"
@@ -188,7 +129,9 @@ def model_and_trainer_setup(training: TimeSeriesDataSet):
     return model, trainer
 
 
-def compute_fold_metrics(model, val_dl, validation_dataset, test_df, fold_id):
+def compute_fold_metrics(
+    model, val_dl, validation_dataset, test_df, fold_id, eval_start_date=None
+):
     raw_preds = model.predict(val_dl, mode="quantiles", return_index=True)
     preds = raw_preds.output
     index_df = raw_preds.index
@@ -203,14 +146,45 @@ def compute_fold_metrics(model, val_dl, validation_dataset, test_df, fold_id):
     merged["pred_p50"] = preds[:, p50_idx]
     merged["pred_p90"] = preds[:, p90_idx]
 
-    actual_lookup = test_df.set_index([GROUP, TIMEIDX])[TARGET]
+    test_df_reset = (
+        test_df.reset_index(drop=True)
+        if "Datetime" in test_df.columns
+        else test_df.reset_index()
+    )
+    datelookup = test_df_reset.set_index(["symbol", "timeidx"])["Datetime"]
+    merged = merged.join(datelookup, on=["symbol", "timeidx"])
+    merged = merged.rename(columns={"Datetime": "date"})
+
+    actual_lookup = test_df_reset.set_index([GROUP, TIMEIDX])[TARGET]
     merged["actual"] = merged.apply(
         lambda r: actual_lookup.get((r[GROUP], r[TIMEIDX] + MAX_PRED_LENGTH), np.nan),
         axis=1,
     )
     merged = merged.dropna(subset=["actual"])
 
-    ic, pval = spearmanr(merged["pred_p50"], merged["actual"])
+    if eval_start_date is not None and "date" in merged.columns:
+        merged = merged[merged["date"] >= eval_start_date]
+
+    # True Daily Cross-Sectional IC
+    daily_cs_ics = []
+    for dt, grp in merged.groupby("date"):
+        if (
+            len(grp) >= 10
+            and grp["pred_p50"].nunique() > 1
+            and grp["actual"].nunique() > 1
+        ):
+            ic_val, _ = spearmanr(grp["pred_p50"], grp["actual"])
+            if not np.isnan(ic_val):
+                daily_cs_ics.append(ic_val)
+
+    mean_cs_ic = float(np.mean(daily_cs_ics)) if daily_cs_ics else np.nan
+    std_cs_ic = float(np.std(daily_cs_ics)) if daily_cs_ics else np.nan
+    cs_ir = (mean_cs_ic / std_cs_ic) if (std_cs_ic and std_cs_ic > 0) else np.nan
+    pct_pos_days = (
+        float((np.array(daily_cs_ics) > 0).mean()) if daily_cs_ics else np.nan
+    )
+
+    pooled_ic, pval = spearmanr(merged["pred_p50"], merged["actual"])
     coverage = (
         (merged["actual"] >= merged["pred_p10"])
         & (merged["actual"] <= merged["pred_p90"])
@@ -218,18 +192,106 @@ def compute_fold_metrics(model, val_dl, validation_dataset, test_df, fold_id):
 
     per_symbol_ic = {}
     for sym, g in merged.groupby(GROUP):
-        if len(g) > 5:
+        if len(g) > 5 and g["pred_p50"].nunique() > 1 and g["actual"].nunique() > 1:
             sym_ic, _ = spearmanr(g["pred_p50"], g["actual"])
-            per_symbol_ic[sym] = sym_ic
+            if not np.isnan(sym_ic):
+                per_symbol_ic[sym] = sym_ic
 
     return {
         "fold": fold_id,
-        "ic": ic,
+        "daily_cs_ic": mean_cs_ic,
+        "daily_cs_std": std_cs_ic,
+        "daily_cs_ir": cs_ir,
+        "pct_positive_ic_days": pct_pos_days,
+        "pooled_ic": pooled_ic,
         "pvalue": pval,
         "coverage": coverage,
         "n_test_rows": len(merged),
+        "n_eval_dates": len(daily_cs_ics),
         **{f"ic_{k}": v for k, v in per_symbol_ic.items()},
     }
+
+
+def decile_spread(
+    model,
+    validation_dataloader,
+    test_df,
+    fold_id,
+    eval_start_date=None,
+    tpct=0.1,
+    min_stocks_per_decile: int = 5,
+):
+    raw_preds = model.predict(
+        validation_dataloader, mode="quantiles", return_index=True
+    )
+    preds = raw_preds.output.squeeze().numpy()
+    index_df = raw_preds.index
+
+    merged = index_df.copy()
+    merged["p10"] = preds[:, 0]
+    merged["p50_returns_predicted"] = preds[:, 1]
+    merged["p90"] = preds[:, 2]
+
+    test_df_reset = (
+        test_df.reset_index(drop=True)
+        if "Datetime" in test_df.columns
+        else test_df.reset_index()
+    )
+    datelookup = test_df_reset.set_index(["symbol", "timeidx"])["Datetime"]
+    merged = merged.join(datelookup, on=["symbol", "timeidx"])
+    merged = merged.rename(columns={"Datetime": "date"})
+
+    actual = test_df_reset.set_index(["symbol", "timeidx"])[TARGET]
+    merged["actual_returns"] = merged.apply(
+        lambda r: actual.get((r[GROUP], r[TIMEIDX] + MAX_PRED_LENGTH), np.nan),
+        axis=1,
+    )
+    merged = merged.dropna(subset=["actual_returns"])
+    merged["fold-id"] = fold_id
+
+    if eval_start_date is not None and "date" in merged.columns:
+        merged = merged[merged["date"] >= eval_start_date]
+
+    decile_returns_comparision = []
+    for date, group in merged.groupby("date"):
+        final = group.sort_values(by="p50_returns_predicted")
+        number_of_stocks = len(final)
+        number_of_stocks_div = int(number_of_stocks * tpct)
+        if number_of_stocks_div < min_stocks_per_decile:
+            continue
+        decile_down = final.iloc[:number_of_stocks_div]
+        decile_top = final.iloc[-number_of_stocks_div:]
+
+        avg_returns_actual_top_decile = decile_top["actual_returns"].mean()
+        avg_returns_actual_down_decile = decile_down["actual_returns"].mean()
+
+        spread = avg_returns_actual_top_decile - avg_returns_actual_down_decile
+        if not np.isnan(spread):
+            decile_returns_comparision.append(
+                {
+                    "date": date,
+                    "fold_id": fold_id,
+                    "spread": spread,
+                    "top_decile_return": avg_returns_actual_top_decile,
+                    "bottom_decile_return": avg_returns_actual_down_decile,
+                    "n_stocks": number_of_stocks_div,
+                }
+            )
+
+    daily_backtest_df = pd.DataFrame(decile_returns_comparision)
+    if len(daily_backtest_df) > 0:
+        mean_spread = float(daily_backtest_df["spread"].mean())
+        std_spread = float(daily_backtest_df["spread"].std())
+        win_rate = float((daily_backtest_df["spread"] > 0).mean())
+        sharpe = (
+            float((mean_spread / std_spread * np.sqrt(252)))
+            if std_spread > 0
+            else np.nan
+        )
+    else:
+        mean_spread, std_spread, win_rate, sharpe = np.nan, np.nan, np.nan, np.nan
+
+    return daily_backtest_df, mean_spread, std_spread, win_rate, sharpe
 
 
 def plot_model_output(model, validation_dataloader):
@@ -257,6 +319,7 @@ def plot_model_output(model, validation_dataloader):
     plt.show()
 
     raw_preds = raw_predictions.output.prediction.cpu().numpy()
+
     p10 = raw_preds[:, 0, 0]
     p50 = raw_preds[:, 0, 1]
     p90 = raw_preds[:, 0, 2]
@@ -289,55 +352,137 @@ def plot_model_output(model, validation_dataloader):
     plt.show()
 
 
-# WalkForward Slicing for training and Out of sample Validation
-df_acc_folds = walk_forward_out_of_sample_dataframe_slices(df=df)
+def run_walk_forward_pipeline():
+    # Scan the univrse, screen the right symbols, download the historical data for timedelta greater than one day
+    all_items = os.listdir(HISTORICAL_DATA_PATH)
+    if all_items:
+        first_item_path = os.path.join(HISTORICAL_DATA_PATH, all_items[0])
+        if os.path.isfile(first_item_path):
+            print("Historical data files found")
+            raw_time = os.path.getctime(first_item_path)
+            file_creation_date = datetime.fromtimestamp(raw_time).date()
+            target_date = TODAY.date()
+            time_difference = target_date - file_creation_date
+            print(f"Time difference in creation and today:{time_difference}")
+            if time_difference > timedelta(20):
+                print("Data stale....\nDownloading fresh data......")
+                failed_symbols = save_histortrical_data(
+                    resolution=RESOLUTION,
+                    DAYS=DAYS,
+                    total_chunks=TOTAL_CHUNKS,
+                    end_date=END_DATE,
+                )
+                if failed_symbols is not None:
+                    print(len(failed_symbols))
+                    for fs in failed_symbols:
+                        print(fs, "\t")
+                _ = save_benchmark_data(
+                    resolution=RESOLUTION,
+                    DAYS=DAYS,
+                    total_chunks=TOTAL_CHUNKS,
+                    end_date=END_DATE,
+                )
 
-results = []
-for i, (train_df, test_df) in enumerate(df_acc_folds):
-    train_df = rebuild_time_idx(train_df, symbol_col="symbol")
-    train_df = train_df.reset_index(drop=True)
-    test_df = rebuild_time_idx(test_df, symbol_col="symbol")
-    test_df = test_df.reset_index(drop=True)
+    df, _ = build_training_set(snapshot_date=datetime.strftime(TODAY, "%Y-%m-%d"))
+    float64_cols = df.select_dtypes(include=["float64"]).columns
+    df[float64_cols] = df[float64_cols].astype(np.float32)
+    df[features] = df[features].astype(np.float32)
+    df.dropna(inplace=True)
+    df = df.sort_values(by=["symbol", "Datetime"])
+    print(f"\t \t Clean dataset rows: {len(df)} \t \t")
 
-    training, validation, train_dataloader, validation_dataloader = build_dataset(
-        train_df=train_df, test_df=test_df
+    # WalkForward Slicing for training and Out of sample Validation
+    df_acc_folds = walk_forward_out_of_sample_dataframe_slices(df=df)
+    results = []
+    backtest_metrics = []
+    spread_metrics = []
+
+    for i, (train_df, test_df) in enumerate(df_acc_folds):
+        eval_start_date = getattr(test_df, "attrs", {}).get("eval_start_date", None)
+        train_df = train_df.sort_values(by=["symbol", "timeidx"]).reset_index(drop=True)
+        test_df = test_df.sort_values(by=["symbol", "timeidx"]).reset_index(drop=True)
+
+        training, validation, train_dataloader, validation_dataloader = build_dataset(
+            train_df=train_df, test_df=test_df
+        )
+        model, trainer = model_and_trainer_setup(training=training)
+        trainer.fit(
+            model=model,
+            train_dataloaders=train_dataloader,
+            val_dataloaders=validation_dataloader,
+        )
+        metrics = compute_fold_metrics(
+            model=model,
+            val_dl=validation_dataloader,
+            validation_dataset=validation,
+            test_df=test_df,
+            fold_id=i,
+            eval_start_date=eval_start_date,
+        )
+        backtest_df, mean_spread, std_spread, win_rate, sharpe = decile_spread(
+            model=model,
+            validation_dataloader=validation_dataloader,
+            test_df=test_df,
+            fold_id=i,
+            eval_start_date=eval_start_date,
+        )
+        if len(backtest_df) > 0:
+            spread_metrics.append(backtest_df)
+        backtest_metrics.append(
+            {
+                "Fold_id": i,
+                "Mean_spread": mean_spread,
+                "Std_spread": std_spread,
+                "Win rate %": win_rate,
+                "Sharpe Ratio": sharpe,
+            }
+        )
+
+        results.append(metrics)
+        pd.DataFrame(results).to_csv(
+            "walk_forward_out_of_sample_results.csv", index=False
+        )
+        pd.DataFrame(backtest_metrics).to_csv("Backtest_Spread_Test.csv", index=False)
+        if spread_metrics:
+            pd.concat(spread_metrics, ignore_index=True).to_csv(
+                "Decile_Spread_Result.csv", index=False
+            )
+        trainer.save_checkpoint(
+            f"/Users/sharmanjeurkar/Projects/SequenceAlpha/models/saved/model_fold_{i}"
+        )
+        print("\n\n\n")
+        print("*" * 50)
+        print(metrics)
+        print("*" * 50)
+        print("\n\n\n")
+
+    results_df = pd.DataFrame(results)
+
+    print("-" * 50)
+    print("\n\n")
+    print(results_df)
+    print(
+        "Mean Daily CS-IC:",
+        results_df["daily_cs_ic"].mean(),
+        "Std Daily CS-IC:",
+        results_df["daily_cs_ic"].std(),
     )
-    model, trainer = model_and_trainer_setup(training=training)
-    trainer.fit(
-        model=model,
-        train_dataloaders=train_dataloader,
-        val_dataloaders=validation_dataloader,
+    print(
+        "Mean Pooled IC:",
+        results_df["pooled_ic"].mean(),
+        "Std Pooled IC:",
+        results_df["pooled_ic"].std(),
     )
-    metrics = compute_fold_metrics(
-        model=model,
-        val_dl=validation_dataloader,
-        validation_dataset=validation,
-        test_df=test_df,
-        fold_id=i,
-    )
-    results.append(metrics)
-    pd.DataFrame(results).to_csv("walk_forward_out_of_sample_results.csv", index=False)
+    print("\n\n")
+    print("-" * 50)
     trainer.save_checkpoint(
-        f"/Users/sharmanjeurkar/Projects/SequenceAlpha/models/saved/model_fold_{i}"
+        "/Users/sharmanjeurkar/Projects/SequenceAlpha/models/saved/tft_model.ckpt"
     )
-    print("\n\n\n")
-    print("*" * 50)
-    print(metrics)
-    print("*" * 50)
-    print("\n\n\n")
 
-results_df = pd.DataFrame(results)
+    plot_model_output(model=model, validation_dataloader=validation_dataloader)
+    pickle.dump(training, open("training_dataset.pkl", "wb"))
+    print("Model and dataset saved successfully")
 
-print("-" * 50)
-print("\n\n")
-print(results_df)
-print("Mean IC:", results_df["ic"].mean(), "Std IC:", results_df["ic"].std())
-print("\n\n")
-print("-" * 50)
-trainer.save_checkpoint(
-    "/Users/sharmanjeurkar/Projects/SequenceAlpha/models/saved/tft_model.ckpt"
-)
 
-plot_model_output(model=model, validation_dataloader=validation_dataloader)
-pickle.dump(training, open("training_dataset.pkl", "wb"))
-print("Model and dataset saved successfully")
+if __name__ == "__main__":
+    run_walk_forward_pipeline()

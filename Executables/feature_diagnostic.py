@@ -20,7 +20,11 @@ Does not touch label.py, model_execute.py, or the running training job.
 Read-only, CPU-only, no GPU contention.
 """
 
+import os
+import sys
 from datetime import datetime
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import numpy as np
 import pandas as pd
@@ -37,6 +41,9 @@ FEATURES = [
     "relative_strength_120d",
     "Vol_Percentile_Rank",
     "Beta_60D",
+    "Pct_52W_High",
+    "Returns_5D",
+    "Intraday_Return",
 ]
 
 
