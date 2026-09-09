@@ -9,7 +9,7 @@ from Data.historical_data.historical_data_scraper import (
     HISTORICAL_DATA_PATH,
     _safe_filename,
 )
-from Data.label import apply_triple_barrier_labels
+from Data.label import add_forward_returns, apply_triple_barrier_labels
 from Data.liquidity_screener.snapshot_store import load_snapshot
 
 benchmark_filename = _safe_filename(BENCHMARK_SYMBOL)
@@ -67,9 +67,18 @@ def feature_enginiering(df: pd.DataFrame, symbol) -> pd.DataFrame:
     df["Gap_Fill_Ratio"] = df["Fill"] / df["Overnight_Gap"]
     df["Gap_Fill_Ratio"] = df["Gap_Fill_Ratio"].replace([np.inf, -np.inf], np.nan)
 
-    # High low disatnce through out rolling year
-    df["Dist_52W_High"] = df["Close"] - df["Close"].rolling(window=252).max()
-    df["Dist_52W_Low"] = df["Close"] - df["Close"].rolling(window=252).min()
+    # High low distance throughout rolling year
+    rolling_252_high = df["Close"].rolling(window=252, min_periods=60).max()
+    rolling_252_low = df["Close"].rolling(window=252, min_periods=60).min()
+    df["Dist_52W_High"] = df["Close"] - rolling_252_high
+    df["Dist_52W_Low"] = df["Close"] - rolling_252_low
+    df["Pct_52W_High"] = (df["Close"] - rolling_252_high) / (rolling_252_high + 1e-8)
+
+    # 5-day return (weekly short-term reversal)
+    df["Returns_5D"] = df["Close"].pct_change(5)
+
+    # Intraday return (session exhaustion/pressure)
+    df["Intraday_Return"] = (df["Close"] - df["Open"]) / (df["Open"] + 1e-8)
 
     # Intraday spread zscore
     df["Intraday_Spread_MA20"] = df["Intraday_Spread"].rolling(window=20).mean()
@@ -85,9 +94,42 @@ def feature_enginiering(df: pd.DataFrame, symbol) -> pd.DataFrame:
     return df
 
 
+def add_market_calendar_time_idx(
+    df: pd.DataFrame, date_col: str = "Datetime"
+) -> pd.DataFrame:
+    """
+    Map each unique market trading calendar date to an integer time index.
+    Guarantees that all symbols on the same date share the exact same timeidx.
+    """
+    unique_dates = np.sort(df[date_col].unique())
+    date_to_idx = {date: idx for idx, date in enumerate(unique_dates)}
+    df["timeidx"] = df[date_col].map(date_to_idx).astype(np.int64)
+    return df
+
+
+def add_cross_sectional_standardization(
+    df: pd.DataFrame,
+    features: list[str],
+    date_col: str = "Datetime",
+) -> pd.DataFrame:
+    """
+    Cross-sectionally z-scores features across symbols for each date:
+    z = (x - mean_date) / (std_date + 1e-8)
+    Ensures relative rank signal stationarity across different market regimes.
+    """
+    df.index.name = None
+    for feat in features:
+        if feat in df.columns:
+            mean = df.groupby(date_col)[feat].transform("mean")
+            std = df.groupby(date_col)[feat].transform("std").fillna(1.0).replace(0, 1.0)
+            df[feat] = ((df[feat] - mean) / (std + 1e-8)).astype(np.float32)
+    return df
+
+
 def add_cross_sectional_vol_rank(
     df: pd.DataFrame, vol_col: str = "Daily_Vol", date_col: str = "Datetime"
 ) -> pd.DataFrame:
+    df.index.name = None
     df["Vol_Percentile_Rank"] = df.groupby(date_col)[vol_col].rank(pct=True)
     return df
 
@@ -149,8 +191,11 @@ def add_relative_strength(
 
 def build_training_set(
     snapshot_date: str,
+    target_type: str = "forward_return",
+    forward_horizon: int = 1,
+    standardize_features: bool = True,
     labeling_kwargs: dict | None = None,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     universe_df, resolved_date = load_snapshot(snapshot_date)
     symbols = universe_df["symbol"].tolist()
 
@@ -180,7 +225,11 @@ def build_training_set(
             df = feature_enginiering(df, symbol)
             df = add_relative_strength(df, benchmark_df, window=WINDOW)
             df = add_rolling_beta(df, benchmark_df, window=60)
-            df = apply_triple_barrier_labels(df)
+            if target_type == "forward_return":
+                df = add_forward_returns(df, horizon=forward_horizon, col_name="Target")
+            else:
+                tb_kwargs = labeling_kwargs or {}
+                df = apply_triple_barrier_labels(df, **tb_kwargs)
             df["symbol"] = symbol
             processed_dataframes.append(df)
 
@@ -193,7 +242,29 @@ def build_training_set(
         raise ValueError("No symbols were successfully processed")
 
     final_df = pd.concat(processed_dataframes, axis=0)
+    if "Datetime" not in final_df.columns:
+        final_df["Datetime"] = final_df.index
+    final_df.index.name = None
+
     final_df = add_cross_sectional_vol_rank(final_df)
+    final_df = add_market_calendar_time_idx(final_df, date_col="Datetime")
+
+    if standardize_features:
+        features_to_standardize = [
+            "Intraday_Spread",
+            "ATR-Ratio",
+            "Intraday_Spread_Zscore",
+            "RSI-close-score",
+            "relative_strength_60d",
+            "relative_strength_120d",
+            "Beta_60D",
+            "Pct_52W_High",
+            "Returns_5D",
+            "Intraday_Return",
+        ]
+        final_df = add_cross_sectional_standardization(
+            final_df, features_to_standardize, date_col="Datetime"
+        )
 
     if failed_symbols:
         print(f"{len(failed_symbols)} symbols failed: {failed_symbols}")
@@ -205,12 +276,19 @@ def build_training_set(
 
 
 def walk_forward_out_of_sample_dataframe_slices(
-    df: pd.DataFrame, startDate=None, endDate=None, jump: int = 3, max_days: int = 8
+    df: pd.DataFrame,
+    startDate=None,
+    endDate=None,
+    jump: int = 3,
+    max_days: int = 8,
+    encoder_buffer_trading_days: int = 32,
 ) -> list[list[pd.DataFrame]]:
     if startDate is None:
         startDate = df.index.min()
     if endDate is None:
         endDate = df.index.max()
+
+    all_dates = pd.Series(df.index.unique()).sort_values().reset_index(drop=True)
 
     total_months = (endDate.year - startDate.year) * 12 + (
         endDate.month - startDate.month
@@ -225,13 +303,23 @@ def walk_forward_out_of_sample_dataframe_slices(
         train_mask = (df.index >= startDate) & (
             df.index <= nextSetEndDateWithoutEmbargo
         )
-        test_mask = (df.index >= nextSetEndDate) & (df.index <= testNextSetEndDate)
+
+        test_dates_before_split = all_dates[all_dates < nextSetEndDate]
+        if len(test_dates_before_split) >= encoder_buffer_trading_days:
+            buffer_start_date = test_dates_before_split.iloc[-encoder_buffer_trading_days]
+        else:
+            buffer_start_date = all_dates.iloc[0]
 
         if testNextSetEndDate <= endDate:
-            dfcollection.append([df[train_mask], df[test_mask]])
+            test_mask = (df.index >= buffer_start_date) & (df.index <= testNextSetEndDate)
+            test_slice = df[test_mask].copy()
+            test_slice.attrs["eval_start_date"] = nextSetEndDate
+            dfcollection.append([df[train_mask], test_slice])
         else:
-            test_mask_final = df.index >= nextSetEndDate
-            dfcollection.append([df[train_mask], df[test_mask_final]])
+            test_mask_final = (df.index >= buffer_start_date) & (df.index <= endDate)
+            test_slice = df[test_mask_final].copy()
+            test_slice.attrs["eval_start_date"] = nextSetEndDate
+            dfcollection.append([df[train_mask], test_slice])
             print("All sets before the end date covered")
             break
 

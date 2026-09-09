@@ -2,6 +2,22 @@ import numpy as np
 import pandas as pd
 
 
+def add_forward_returns(
+    df: pd.DataFrame,
+    horizon: int = 1,
+    col_name: str = "Target",
+    price_col: str = "Close",
+) -> pd.DataFrame:
+    """
+    Computes clean forward holding period return:
+    Target_t = (Close_{t + horizon} - Close_t) / Close_t
+    Suitable for cross-sectional ranking and decile spread strategies.
+    """
+    out = df.copy()
+    out[col_name] = (out[price_col].shift(-horizon) - out[price_col]) / out[price_col]
+    return out
+
+
 def apply_triple_barrier_labels(
     df: pd.DataFrame,
     vol_col="Daily_Vol",
@@ -11,6 +27,7 @@ def apply_triple_barrier_labels(
     price_close: str = "Close",
     high_col: str = "High",
     low_col: str = "Low",
+    use_exact_barrier_prices: bool = True,
 ) -> pd.DataFrame:
     n = len(df)
     close = df[price_close].values
@@ -41,28 +58,34 @@ def apply_triple_barrier_labels(
 
     returns = np.full(n, np.nan)
 
-    def _price_on_touch_day(price_array, touch_day):
-        result = np.full(n, np.nan)
-        valid_rows = ~np.isnan(touch_day)
-        idx = np.arange(n)[valid_rows]
-        offsets = touch_day[valid_rows].astype(int)
-        result[valid_rows] = price_array[idx + offsets]
-        return result
+    if use_exact_barrier_prices:
+        # Realistic execution: if barrier is reached, order executes at the barrier level
+        returns[collision_mask] = (lower_barrier[collision_mask] - close[collision_mask]) / close[collision_mask]
+        returns[upper_wins_mask] = (upper_barrier[upper_wins_mask] - close[upper_wins_mask]) / close[upper_wins_mask]
+        returns[lower_wins_mask] = (lower_barrier[lower_wins_mask] - close[lower_wins_mask]) / close[lower_wins_mask]
+    else:
+        def _price_on_touch_day(price_array, touch_day):
+            result = np.full(n, np.nan)
+            valid_rows = ~np.isnan(touch_day)
+            idx = np.arange(n)[valid_rows]
+            offsets = touch_day[valid_rows].astype(int)
+            result[valid_rows] = price_array[idx + offsets]
+            return result
 
-    high_on_upper_touch = _price_on_touch_day(high, upper_touch_day)
-    low_on_lower_touch = _price_on_touch_day(low, lower_touch_day)
+        high_on_upper_touch = _price_on_touch_day(high, upper_touch_day)
+        low_on_lower_touch = _price_on_touch_day(low, lower_touch_day)
 
-    returns[collision_mask] = (
-        low_on_lower_touch[collision_mask] - close[collision_mask]
-    ) / close[collision_mask]
+        returns[collision_mask] = (
+            low_on_lower_touch[collision_mask] - close[collision_mask]
+        ) / close[collision_mask]
 
-    returns[upper_wins_mask] = (
-        high_on_upper_touch[upper_wins_mask] - close[upper_wins_mask]
-    ) / close[upper_wins_mask]
+        returns[upper_wins_mask] = (
+            high_on_upper_touch[upper_wins_mask] - close[upper_wins_mask]
+        ) / close[upper_wins_mask]
 
-    returns[lower_wins_mask] = (
-        low_on_lower_touch[lower_wins_mask] - close[lower_wins_mask]
-    ) / close[lower_wins_mask]
+        returns[lower_wins_mask] = (
+            low_on_lower_touch[lower_wins_mask] - close[lower_wins_mask]
+        ) / close[lower_wins_mask]
 
     vertical_idx = np.arange(n)
     vertical_valid = neither_hit_mask & (vertical_idx + max_days < n)
