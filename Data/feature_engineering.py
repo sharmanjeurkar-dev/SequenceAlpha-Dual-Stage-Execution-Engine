@@ -192,7 +192,7 @@ def add_relative_strength(
 def build_training_set(
     snapshot_date: str,
     target_type: str = "forward_return",
-    forward_horizon: int = 1,
+    forward_horizon: int = 5,
     standardize_features: bool = True,
     labeling_kwargs: dict | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -280,7 +280,7 @@ def walk_forward_out_of_sample_dataframe_slices(
     startDate=None,
     endDate=None,
     jump: int = 3,
-    max_days: int = 8,
+    max_days: int = 10,
     encoder_buffer_trading_days: int = 32,
 ) -> list[list[pd.DataFrame]]:
     if startDate is None:

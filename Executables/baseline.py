@@ -1,5 +1,10 @@
+import os
+import sys
 from datetime import datetime
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 from sklearn.linear_model import LogisticRegression
@@ -22,53 +27,81 @@ DAYS = 365
 TOTAL_CHUNKS = 5
 END_DATE = TODAY = datetime.now()
 
-failed_symbols = save_histortrical_data(
-    resolution=RESOLUTION, DAYS=DAYS, total_chunks=TOTAL_CHUNKS, end_date=END_DATE
-)
+import os
+from datetime import timedelta
+from Data.feature_engineering import HISTORICAL_DATA_PATH
 
-if failed_symbols is not None:
-    for fs in failed_symbols:
-        print(fs)
-
-_ = save_benchmark_data(
-    resolution=RESOLUTION, DAYS=DAYS, total_chunks=TOTAL_CHUNKS, end_date=END_DATE
-)
+all_items = os.listdir(HISTORICAL_DATA_PATH) if os.path.exists(HISTORICAL_DATA_PATH) else []
+if all_items:
+    first_item_path = os.path.join(HISTORICAL_DATA_PATH, all_items[0])
+    if os.path.isfile(first_item_path):
+        raw_time = os.path.getctime(first_item_path)
+        file_creation_date = datetime.fromtimestamp(raw_time).date()
+        if (TODAY.date() - file_creation_date) > timedelta(30):
+            _ = save_histortrical_data(
+                resolution=RESOLUTION, DAYS=DAYS, total_chunks=TOTAL_CHUNKS, end_date=END_DATE
+            )
+            _ = save_benchmark_data(
+                resolution=RESOLUTION, DAYS=DAYS, total_chunks=TOTAL_CHUNKS, end_date=END_DATE
+            )
+else:
+    _ = save_histortrical_data(
+        resolution=RESOLUTION, DAYS=DAYS, total_chunks=TOTAL_CHUNKS, end_date=END_DATE
+    )
+    _ = save_benchmark_data(
+        resolution=RESOLUTION, DAYS=DAYS, total_chunks=TOTAL_CHUNKS, end_date=END_DATE
+    )
+# accessing the benchmark_data file
 benchmark_df = pd.read_parquet("Data/historical_data/data/NSE_NIFTY50-INDEX.parquet")
 
 universal_df, failure_df = build_training_set(
     snapshot_date=datetime.strftime(TODAY, "%Y-%m-%d")
 )
 
+feature_columns = [
+    "Intraday_Spread",
+    "ATR-Ratio",
+    "Intraday_Spread_Zscore",
+    "RSI-close-score",
+    "relative_strength_60d",
+    "relative_strength_120d",
+    "Vol_Percentile_Rank",
+    "Beta_60D",
+    "Pct_52W_High",
+    "Returns_5D",
+    "Intraday_Return",
+]
+
+universal_df = universal_df.dropna(subset=feature_columns + ["Target"]).copy()
 universal_df["Target_binary"] = (universal_df["Target"] > 0).astype(int)
 
 df_list = walk_forward_out_of_sample_dataframe_slices(
-    df=universal_df, jump=3, max_days=8
+    df=universal_df, jump=3, max_days=10
 )
-
-feature_columns = [
-    "RSI-close-score",
-    "MA-Cross",
-    "MA-200",
-    "relative_strength",
-    "OBV-ROC",
-    "VWAP-20D-Dist",
-    "ATR-Ratio",
-    "Intraday_Spread",
-    "Volume-Rate-of-Change",
-]
-
 
 model = LogisticRegression(max_iter=1000)
 
 predictions = []
 y_tests = []
-
+fold_cs_ics = []
 
 for fold_num, (train_df, test_df) in enumerate(df_list):
-    X_train = train_df[feature_columns]
-    y_train = train_df["Target_binary"]
-    X_test = test_df[feature_columns]
-    y_test = test_df["Target_binary"]
+    eval_start_date = getattr(test_df, "attrs", {}).get("eval_start_date", None)
+    if eval_start_date is not None:
+        eval_test_df = test_df[test_df.index >= eval_start_date].copy()
+    else:
+        eval_test_df = test_df.copy()
+
+    train_clean = train_df.dropna(subset=feature_columns + ["Target_binary"])
+    test_clean = eval_test_df.dropna(subset=feature_columns + ["Target_binary", "Target"])
+
+    if len(train_clean) < 50 or len(test_clean) < 10:
+        continue
+
+    X_train = train_clean[feature_columns]
+    y_train = train_clean["Target_binary"]
+    X_test = test_clean[feature_columns]
+    y_test = test_clean["Target_binary"]
 
     model = LogisticRegression(max_iter=1000)
     model.fit(X_train, y_train)
@@ -79,20 +112,29 @@ for fold_num, (train_df, test_df) in enumerate(df_list):
     acc = accuracy_score(y_test, predicted_class)
     fold_accuracies.append(acc)
 
-    # IC: rank correlation between predicted probability and the ACTUAL
-    # continuous return (Target), not the binary label -- this tells you
-    # whether higher predicted confidence actually corresponds to larger
-    # real forward returns, which accuracy alone can't show.
-    ic, p_value = spearmanr(predicted_proba, test_df["Target"])
+    # Pooled IC
+    ic, p_value = spearmanr(predicted_proba, eval_test_df["Target"])
     fold_ics.append(ic)
 
-    print(f"Fold {fold_num}: accuracy={acc:.3f}, IC={ic:.4f} (p={p_value:.3f})")
+    # Daily Cross-Sectional IC
+    eval_test_df_copy = eval_test_df.copy()
+    eval_test_df_copy["pred_score"] = predicted_proba
+    daily_cs = []
+    for dt, grp in eval_test_df_copy.groupby("Datetime"):
+        if len(grp) >= 10 and grp["pred_score"].nunique() > 1 and grp["Target"].nunique() > 1:
+            r, _ = spearmanr(grp["pred_score"], grp["Target"])
+            if not np.isnan(r):
+                daily_cs.append(r)
+    mean_cs = np.mean(daily_cs) if daily_cs else np.nan
+    fold_cs_ics.append(mean_cs)
+
+    print(f"Fold {fold_num}: accuracy={acc:.3f}, Pooled IC={ic:.4f}, Daily CS-IC={mean_cs:.4f}")
 
 print(
-    f"\nMean accuracy across folds: {sum(fold_accuracies) / len(fold_accuracies):.3f}"
+    f"\nMean accuracy across folds: {np.nanmean(fold_accuracies):.3f}"
 )
-print(f"Mean IC across folds: {sum(fold_ics) / len(fold_ics):.4f}")
-print(f"IC std across folds: {pd.Series(fold_ics).std():.4f}")
+print(f"Mean Pooled IC across folds: {np.nanmean(fold_ics):.4f}")
+print(f"Mean Daily CS-IC across folds: {np.nanmean(fold_cs_ics):.4f}")
 
 """
 Result of baseline:
