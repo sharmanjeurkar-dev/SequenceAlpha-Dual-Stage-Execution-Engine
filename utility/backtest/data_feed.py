@@ -25,24 +25,3 @@ class TFTData(bt.feeds.PandasData):
         ("p90", "p90"),
     )
 
-
-class NiftyIndexData(bt.feeds.PandasData):
-    """
-    Extends Backtrader PandasData to include Nifty 50 macro trend & volatility lines.
-    """
-
-    lines = ("sma_50", "sma_20", "ret_5d")
-
-    params = (
-        ("datetime", None),
-        ("open", "Open"),
-        ("high", "High"),
-        ("low", "Low"),
-        ("close", "Close"),
-        ("volume", "Volume"),
-        ("openinterest", -1),
-        ("sma_50", "SMA_50"),
-        ("sma_20", "SMA_20"),
-        ("ret_5d", "ret_5d"),
-    )
-

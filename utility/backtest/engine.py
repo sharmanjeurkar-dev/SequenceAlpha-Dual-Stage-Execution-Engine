@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 import backtrader as bt
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -19,18 +20,18 @@ import pandas as pd
 try:
     from utility.backtest.commission import NSEEquityCommissionScheme
     from utility.backtest.data_feed import TFTData
-    from utility.backtest.strategy import TFTTopNStrategy, TFTRollingCohortsStrategy
+    from utility.backtest.strategy import TFTRollingCohortsStrategy, TFTTopNStrategy
 except ImportError:
     from commission import NSEEquityCommissionScheme
     from data_feed import TFTData
-    from strategy import TFTTopNStrategy, TFTRollingCohortsStrategy
+    from strategy import TFTRollingCohortsStrategy, TFTTopNStrategy
 
 
 from Data.historical_data.historical_data_scraper import (
     HISTORICAL_DATA_PATH,
     _safe_filename,
 )
-from Executables.generate_backtest_signals import (
+from utility.backtest.generate_backtest_signals import (
     OUTPUT_CACHE_PATH,
     generate_oos_predictions,
 )
@@ -45,7 +46,9 @@ def load_candidate_feeds(oos_predictions_df):
     trading_calendar = pd.DatetimeIndex(sorted(oos_predictions_df["date"].unique()))
     symbols = oos_predictions_df["symbol"].unique()
     print(f"Preparing Backtrader data feeds across {len(symbols)} candidate symbols...")
-    print(f"Master trading calendar: {len(trading_calendar)} dates ({trading_calendar[0].date()} to {trading_calendar[-1].date()})")
+    print(
+        f"Master trading calendar: {len(trading_calendar)} dates ({trading_calendar[0].date()} to {trading_calendar[-1].date()})"
+    )
 
     data_feeds = {}
     for sym in symbols:
@@ -69,7 +72,9 @@ def load_candidate_feeds(oos_predictions_df):
             sym_preds["date"] = sym_preds["date"].dt.tz_localize(None)
         sym_preds = sym_preds.set_index("date")
 
-        merged = price_df.join(sym_preds[["p10", "p50_returns_predicted", "p90"]], how="left")
+        merged = price_df.join(
+            sym_preds[["p10", "p50_returns_predicted", "p90"]], how="left"
+        )
         merged = merged.reindex(trading_calendar)
 
         # Clean price continuity: forward-fill trading prices and zero volume for unlisted days
@@ -81,7 +86,9 @@ def load_candidate_feeds(oos_predictions_df):
         feed = TFTData(dataname=merged, name=sym)
         data_feeds[sym] = feed
 
-    print(f"✓ Loaded {len(data_feeds)} valid data feeds aligned to {len(trading_calendar)} bars.")
+    print(
+        f"✓ Loaded {len(data_feeds)} valid data feeds aligned to {len(trading_calendar)} bars."
+    )
     return data_feeds
 
 
@@ -90,7 +97,7 @@ def run_backtest(
     cohort_size=3,
     total_positions=15,
     holding_bars=5,
-    slippage_perc=0.0005,     # 5 bps slippage
+    slippage_perc=0.0005,  # 5 bps slippage
     verbose=False,
     max_symbols=None,
 ):
@@ -102,7 +109,9 @@ def run_backtest(
     print("=" * 65)
     print(f"Starting Capital:   ₹{initial_cash:,.2f}")
     print(f"Holding Horizon:    {holding_bars} trading days (H=5)")
-    print(f"Portfolio Sizing:   {total_positions} active stocks ({cohort_size} added daily)")
+    print(
+        f"Portfolio Sizing:   {total_positions} active stocks ({cohort_size} added daily)"
+    )
     print(f"Execution Slippage: {slippage_perc * 10000:.1f} bps")
     print(f"Cost Model:         NSE Delivery (STT 0.1%, Brokerage, GST, Stamp)")
     print("=" * 65)
@@ -239,7 +248,6 @@ def run_backtest(
     pd.DataFrame(summary_data).to_csv("Backtrader_Portfolio_Summary.csv", index=False)
     print("✓ Saved summary metrics to Backtrader_Portfolio_Summary.csv")
 
-
     # Save detailed trade execution ledger
     trades_df = pd.DataFrame(strat.closed_trades)
     if not trades_df.empty:
@@ -254,7 +262,6 @@ def run_backtest(
 
     # 5. Plot Portfolio Equity Curve vs Nifty 50 Benchmark
     plot_equity_curve(strat, initial_cash)
-
 
     return {
         "final_value": final_val,
@@ -279,7 +286,9 @@ def plot_equity_curve(strat, initial_cash):
     if not dates or not values:
         return
 
-    eq_df = pd.DataFrame({"Date": pd.to_datetime(dates), "Portfolio": values}).set_index("Date")
+    eq_df = pd.DataFrame(
+        {"Date": pd.to_datetime(dates), "Portfolio": values}
+    ).set_index("Date")
     eq_df = eq_df[~eq_df.index.duplicated(keep="first")]
     eq_df["Strategy_Normalized"] = (eq_df["Portfolio"] / initial_cash) * 100
 
@@ -298,9 +307,26 @@ def plot_equity_curve(strat, initial_cash):
             bench_norm = (sub_bench["Close"] / sub_bench["Close"].iloc[0]) * 100
 
             plt.figure(figsize=(12, 6))
-            plt.plot(sub_strat.index, sub_strat["Strategy_Normalized"], label="TFT Rolling Cohorts (Top-3 Daily, Net of Costs)", color="#2ca02c", lw=2)
-            plt.plot(sub_bench.index, bench_norm, label="Nifty 50 Index (Benchmark)", color="#ff7f0e", lw=1.5, ls="--")
-            plt.title("SequenceAlpha: TFT Rolling Cohorts Strategy vs Nifty 50 (Event-Driven)", fontsize=14, fontweight="bold")
+            plt.plot(
+                sub_strat.index,
+                sub_strat["Strategy_Normalized"],
+                label="TFT Rolling Cohorts (Top-3 Daily, Net of Costs)",
+                color="#2ca02c",
+                lw=2,
+            )
+            plt.plot(
+                sub_bench.index,
+                bench_norm,
+                label="Nifty 50 Index (Benchmark)",
+                color="#ff7f0e",
+                lw=1.5,
+                ls="--",
+            )
+            plt.title(
+                "SequenceAlpha: TFT Rolling Cohorts Strategy vs Nifty 50 (Event-Driven)",
+                fontsize=14,
+                fontweight="bold",
+            )
             plt.xlabel("Date", fontsize=11)
             plt.ylabel("Portfolio Value (Indexed to 100)", fontsize=11)
             plt.grid(True, alpha=0.3)
@@ -311,13 +337,18 @@ def plot_equity_curve(strat, initial_cash):
             print("✓ Saved equity curve comparison to backtest_equity_curve.png")
             return
 
-
-
-
     # Fallback plot without benchmark
     plt.figure(figsize=(12, 6))
-    plt.plot(eq_df.index, eq_df["Strategy_Normalized"], label="TFT Top-15 Strategy", color="#1f77b4", lw=2)
-    plt.title("SequenceAlpha TFT Strategy: Equity Curve", fontsize=14, fontweight="bold")
+    plt.plot(
+        eq_df.index,
+        eq_df["Strategy_Normalized"],
+        label="TFT Top-15 Strategy",
+        color="#1f77b4",
+        lw=2,
+    )
+    plt.title(
+        "SequenceAlpha TFT Strategy: Equity Curve", fontsize=14, fontweight="bold"
+    )
     plt.xlabel("Date", fontsize=11)
     plt.ylabel("Portfolio Value (Indexed to 100)", fontsize=11)
     plt.grid(True, alpha=0.3)
