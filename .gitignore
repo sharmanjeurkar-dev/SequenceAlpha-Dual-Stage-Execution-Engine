@@ -1,21 +1,8 @@
-Data/__pycache__
-models/__pycache__
-utility/__pycache__
-notebooks/kernel-metadata.json
-Dataset.zip
-Dataset
 access_token.env
 fyersApi.log
 fyersRequests.log
-Output1.png
-Output2.png
-stage2_training_logs.txt
-stage1_training_logs.txt
 models/saved/
 test/test.ipynb
-archive/
-NIFTY_with_stage1_confidence.csv
-Outputs/Graphs
 venv
 .DS_Store 
 attention vs time index.png
@@ -26,3 +13,11 @@ tft_interpretation.png
 tft_model.ckpt
 training_dataset.pkl
 lightning_logs/
+*.env
+Data/historical_data/data
+*__pycache__
+*__init__.py
+Data/cache/
+Data/liquidity_screener/snapshots/
+*.png
+*.csv
