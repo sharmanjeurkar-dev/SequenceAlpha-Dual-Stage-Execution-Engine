@@ -44,6 +44,7 @@ FEATURES = [
     "Pct_52W_High",
     "Returns_5D",
     "Intraday_Return",
+    "EMA-Cross-Spread",
 ]
 
 

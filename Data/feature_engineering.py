@@ -90,6 +90,12 @@ def feature_enginiering(df: pd.DataFrame, symbol) -> pd.DataFrame:
         [np.inf, -np.inf], np.nan
     )
     df["Amihud_Illiquidity"] = df["Returns"] / (df["Close"] * df["Volume"])
+
+    df["EMA-9"] = df["Close"].ewm(span=9, adjust=False).mean()
+    df["EMA-21"] = df["Close"].ewm(span=21, adjust=False).mean()
+
+    df["EMA-Cross-Spread"] = (df["EMA-9"] - df["EMA-21"]) / df["Close"]
+
     df.dropna(inplace=True)
     return df
 
@@ -121,7 +127,9 @@ def add_cross_sectional_standardization(
     for feat in features:
         if feat in df.columns:
             mean = df.groupby(date_col)[feat].transform("mean")
-            std = df.groupby(date_col)[feat].transform("std").fillna(1.0).replace(0, 1.0)
+            std = (
+                df.groupby(date_col)[feat].transform("std").fillna(1.0).replace(0, 1.0)
+            )
             df[feat] = ((df[feat] - mean) / (std + 1e-8)).astype(np.float32)
     return df
 
@@ -261,6 +269,7 @@ def build_training_set(
             "Pct_52W_High",
             "Returns_5D",
             "Intraday_Return",
+            "EMA-Cross-Spread",
         ]
         final_df = add_cross_sectional_standardization(
             final_df, features_to_standardize, date_col="Datetime"
@@ -306,12 +315,16 @@ def walk_forward_out_of_sample_dataframe_slices(
 
         test_dates_before_split = all_dates[all_dates < nextSetEndDate]
         if len(test_dates_before_split) >= encoder_buffer_trading_days:
-            buffer_start_date = test_dates_before_split.iloc[-encoder_buffer_trading_days]
+            buffer_start_date = test_dates_before_split.iloc[
+                -encoder_buffer_trading_days
+            ]
         else:
             buffer_start_date = all_dates.iloc[0]
 
         if testNextSetEndDate <= endDate:
-            test_mask = (df.index >= buffer_start_date) & (df.index <= testNextSetEndDate)
+            test_mask = (df.index >= buffer_start_date) & (
+                df.index <= testNextSetEndDate
+            )
             test_slice = df[test_mask].copy()
             test_slice.attrs["eval_start_date"] = nextSetEndDate
             dfcollection.append([df[train_mask], test_slice])
