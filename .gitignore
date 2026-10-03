@@ -21,3 +21,4 @@ Data/cache/
 Data/liquidity_screener/snapshots/
 *.png
 *.csv
+graphs/

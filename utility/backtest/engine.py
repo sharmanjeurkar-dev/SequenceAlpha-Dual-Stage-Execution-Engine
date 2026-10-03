@@ -139,6 +139,7 @@ def run_backtest(
     cerebro.broker.setcash(initial_cash)
     cerebro.broker.addcommissioninfo(NSEEquityCommissionScheme())
     cerebro.broker.set_slippage_perc(slippage_perc)
+    cerebro.broker.set_coc(True)  # Cheat-On-Close: instant settlement of sales into available cash
 
     # Add Strategy: Rolling Overlapping Cohorts
     cerebro.addstrategy(
@@ -291,6 +292,7 @@ def plot_equity_curve(strat, initial_cash):
     ).set_index("Date")
     eq_df = eq_df[~eq_df.index.duplicated(keep="first")]
     eq_df["Strategy_Normalized"] = (eq_df["Portfolio"] / initial_cash) * 100
+    eq_df.to_csv("backtest_equity_curve.csv")
 
     # Load Nifty 50 benchmark
     benchmark_path = "Data/historical_data/data/NSE_NIFTY50-INDEX.parquet"
@@ -323,7 +325,7 @@ def plot_equity_curve(strat, initial_cash):
                 ls="--",
             )
             plt.title(
-                "SequenceAlpha: TFT Rolling Cohorts Strategy vs Nifty 50 (Event-Driven)",
+                "SequenceAlpha: AlphaHarvest-Trailing Strategy vs Nifty 50 (Event-Driven)",
                 fontsize=14,
                 fontweight="bold",
             )
@@ -332,9 +334,10 @@ def plot_equity_curve(strat, initial_cash):
             plt.grid(True, alpha=0.3)
             plt.legend(fontsize=11)
             plt.tight_layout()
-            plt.savefig("backtest_equity_curve.png", dpi=300)
+            os.makedirs("graphs", exist_ok=True)
+            plt.savefig("graphs/backtest_equity_curve.png", dpi=300)
             plt.close()
-            print("✓ Saved equity curve comparison to backtest_equity_curve.png")
+            print("✓ Saved equity curve comparison to graphs/backtest_equity_curve.png")
             return
 
     # Fallback plot without benchmark
@@ -342,21 +345,22 @@ def plot_equity_curve(strat, initial_cash):
     plt.plot(
         eq_df.index,
         eq_df["Strategy_Normalized"],
-        label="TFT Top-15 Strategy",
+        label="AlphaHarvest-Trailing Strategy",
         color="#1f77b4",
         lw=2,
     )
     plt.title(
-        "SequenceAlpha TFT Strategy: Equity Curve", fontsize=14, fontweight="bold"
+        "SequenceAlpha AlphaHarvest Strategy: Equity Curve", fontsize=14, fontweight="bold"
     )
     plt.xlabel("Date", fontsize=11)
     plt.ylabel("Portfolio Value (Indexed to 100)", fontsize=11)
     plt.grid(True, alpha=0.3)
     plt.legend(fontsize=11)
     plt.tight_layout()
-    plt.savefig("backtest_equity_curve.png", dpi=300)
+    os.makedirs("graphs", exist_ok=True)
+    plt.savefig("graphs/backtest_equity_curve.png", dpi=300)
     plt.close()
-    print("✓ Saved equity curve to backtest_equity_curve.png")
+    print("✓ Saved equity curve to graphs/backtest_equity_curve.png")
 
 
 if __name__ == "__main__":
