@@ -96,6 +96,28 @@ def feature_enginiering(df: pd.DataFrame, symbol) -> pd.DataFrame:
 
     df["EMA-Cross-Spread"] = (df["EMA-9"] - df["EMA-21"]) / df["Close"]
 
+    df["Sma-50"] = df["Close"].rolling(window=50).mean()
+    df["Sma-200"] = df["Close"].rolling(window=200, min_periods=60).mean()
+
+    df["Short-Term-Momentum-ratio"] = df["Close"] / df["Sma-50"]
+    df["Long-Term-Momentum-ratio"] = df["Close"] / df["Sma-200"]
+
+    df["Volume-dry-up-ratio"] = df["Volume"].rolling(window=5).mean() / (
+        df["Volume"].rolling(window=50).mean() + 1e-8
+    )
+
+    df["Close-High-distance-20D"] = (
+        df["Close"] - df["Close"].rolling(window=20).max()
+    ) / df["Close"].rolling(window=20).max()
+
+    df["Volatility-Contraction"] = (
+        df["Close"].rolling(window=20).std() - df["Close"].rolling(window=100).std()
+    ) / (df["Close"].rolling(window=100).std() + 1e-8)
+
+    df["Volume-High-distance-20D"] = (
+        df["Volume"] - df["Volume"].rolling(window=20).max()
+    ) / (df["Volume"].rolling(window=20).max() + 1e-8)
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
     df.dropna(inplace=True)
     return df
 
@@ -270,6 +292,12 @@ def build_training_set(
             "Returns_5D",
             "Intraday_Return",
             "EMA-Cross-Spread",
+            "Short-Term-Momentum-ratio",
+            "Long-Term-Momentum-ratio",
+            "Volume-dry-up-ratio",
+            "Close-High-distance-20D",
+            "Volatility-Contraction",
+            "Volume-High-distance-20D",
         ]
         final_df = add_cross_sectional_standardization(
             final_df, features_to_standardize, date_col="Datetime"
