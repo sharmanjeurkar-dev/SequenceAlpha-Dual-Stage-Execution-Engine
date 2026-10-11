@@ -21,10 +21,18 @@ class PortfolioStateManager:
         target_profit_threshold: float = 0.06,  # Target 1 = +6.0%
         partial_exit_ratio: float = 0.50,       # Book 50%
         break_even_buffer: float = 0.010,       # +1.0% net floor
-        stop_loss_threshold: float = 0.045,     # -4.5% cut
+        stop_loss_threshold: float = 0.045,     # -4.5% flat stop (Champion: 46.79% CAGR / 1.70 Sharpe)
+        use_vol_adaptive_stop: bool = False,    # Optional Clamped Volatility-Adaptive Stop: clip(1.8 * vol_20d, 4.0%, 5.5%)
+        vol_stop_min: float = 0.040,            # 4.0% minimum stop floor
+        vol_stop_max: float = 0.055,            # 5.5% maximum stop cap
+        vol_stop_mult: float = 1.8,             # 1.8x daily volatility multiplier
         rem_trail_min: float = 0.05,            # 5.0% trail cushion
         trailing_vol_mult: float = 1.8,         # 1.8 * sigma
         quarantine_bars: int = 5,
+        min_score: float = 0.0,                 # Conviction gate: require positive p50 > 0.0
+        min_upside_skew: float = 1.25,          # Upside/Downside skew filter: p90 / |p10| >= 1.25
+        bear_cohort_size: int = 1,              # Reduced daily cohort size during Nifty 50 bear regime
+        bear_cash_buffer: float = 0.25,         # Elevated cash buffer during Nifty 50 bear regime
     ):
         self.state_file = state_file
         self.total_positions = total_positions
@@ -35,9 +43,17 @@ class PortfolioStateManager:
         self.partial_exit_ratio = partial_exit_ratio
         self.break_even_buffer = break_even_buffer
         self.stop_loss_threshold = stop_loss_threshold
+        self.use_vol_adaptive_stop = use_vol_adaptive_stop
+        self.vol_stop_min = vol_stop_min
+        self.vol_stop_max = vol_stop_max
+        self.vol_stop_mult = vol_stop_mult
         self.rem_trail_min = rem_trail_min
         self.trailing_vol_mult = trailing_vol_mult
         self.quarantine_bars = quarantine_bars
+        self.min_score = min_score
+        self.min_upside_skew = min_upside_skew
+        self.bear_cohort_size = bear_cohort_size
+        self.bear_cash_buffer = bear_cash_buffer
 
         self.state = self.load_state()
 
@@ -111,8 +127,20 @@ class PortfolioStateManager:
 
             # Stage 1: Before Target 1 is hit
             if not s["target_hit"]:
-                # Check Emergency Stop Loss (-4.5%)
-                if price <= s["entry_price"] * (1.0 - self.stop_loss_threshold):
+                # Check Emergency Stop Loss (Clamped Volatility-Adaptive or Flat Fallback)
+                if s.get("stop_price") is not None:
+                    effective_stop = s["stop_price"]
+                else:
+                    vol = s.get("volatility_20d", 0.025)
+                    stop_dist = (
+                        min(self.vol_stop_max, max(self.vol_stop_min, self.vol_stop_mult * vol))
+                        if self.use_vol_adaptive_stop
+                        else self.stop_loss_threshold
+                    )
+                    effective_stop = s["entry_price"] * (1.0 - stop_dist)
+
+                if price <= effective_stop:
+                    loss_pct = (1.0 - (price / s["entry_price"])) * 100
                     actions.append({
                         "action": "EMERGENCY_CUT_100_PERCENT",
                         "slot_id": s["slot_id"],
@@ -121,7 +149,7 @@ class PortfolioStateManager:
                         "price": price,
                         "entry_price": s["entry_price"],
                         "entry_date": s.get("entry_date"),
-                        "reason": f"Emergency cut at -{self.stop_loss_threshold*100:.1f}%",
+                        "reason": f"Emergency vol-stop cut at -{loss_pct:.2f}% (stop={effective_stop:.2f})",
                     })
                     self.state["cash_balance"] = self.state.get("cash_balance", 0.0) + (s["current_shares"] * price)
                     self.state["quarantine"][sym] = self.quarantine_bars
@@ -178,6 +206,8 @@ class PortfolioStateManager:
         liquid_cash: Optional[float] = None,
         current_prices: Dict[str, float] = None,
         volatilities: Dict[str, float] = None,
+        upside_skews: Dict[str, float] = None,
+        is_bear_regime: bool = False,
     ) -> Tuple[List[dict], List[dict]]:
         """
         Executes Day-5 cohort rollover, liquidates expiring/losing slots,
@@ -238,15 +268,26 @@ class PortfolioStateManager:
         for sym in quarantine_to_delete:
             del self.state["quarantine"][sym]
 
-        # 4. Filter top candidate picks
+        # 4. Filter top candidate picks (with conviction gate, upside skew filter, and macro regime throttle)
         active_symbols = {s["symbol"] for s in self.state["slots"] if s["symbol"] is not None}
         quarantined_symbols = set(self.state["quarantine"].keys())
 
-        num_needed = len(expiring_slots)
+        target_cohort_size = self.bear_cohort_size if is_bear_regime else self.daily_cohort_size
+        slots_to_fill = expiring_slots[:target_cohort_size]
+        num_needed = len(slots_to_fill)
         chosen_picks = []
-        for sym, score in candidates:
+        for item in candidates:
             if len(chosen_picks) >= num_needed:
                 break
+            sym, score = item[0], item[1]
+            if score <= self.min_score:
+                continue
+            if len(item) >= 3:
+                if item[2] < self.min_upside_skew:
+                    continue
+            elif upside_skews is not None and sym in upside_skews:
+                if upside_skews[sym] < self.min_upside_skew:
+                    continue
             if sym not in active_symbols and sym not in quarantined_symbols and sym not in chosen_picks:
                 chosen_picks.append(sym)
 
@@ -254,37 +295,52 @@ class PortfolioStateManager:
             self.save_state()
             return exit_orders, buy_orders
 
-        # 5. Calculate uncapped spendable liquid cash
+        # 5. Calculate spendable liquid cash
         total_portfolio_value = liquid_cash + expected_sales_proceeds
         for s in self.state["slots"]:
             if s["symbol"] is not None:
                 px = current_prices.get(s["symbol"], s["entry_price"] or 100.0)
                 total_portfolio_value += s["current_shares"] * px
 
-        cash_reserve = total_portfolio_value * self.cash_buffer
+        effective_cash_buffer = max(self.cash_buffer, self.bear_cash_buffer) if is_bear_regime else self.cash_buffer
+        cash_reserve = total_portfolio_value * effective_cash_buffer
         total_available = liquid_cash + expected_sales_proceeds
         net_investable_cash = max(0.0, total_available - cash_reserve) * 0.995
+
+        # Phased vs Steady-state budget:
+        currently_held = len(active_symbols)
+        if currently_held < (self.total_positions - self.daily_cohort_size):
+            cohort_budget = min(net_investable_cash, (total_portfolio_value / self.holding_bars) * 0.995)
+        else:
+            cohort_budget = net_investable_cash
 
         # 6. Inverse-volatility weighting across chosen picks
         inv_vols = [1.0 / max(volatilities.get(sym, 0.025), 0.005) for sym in chosen_picks]
         tot_inv = sum(inv_vols)
         weights = [iv / tot_inv for iv in inv_vols]
 
-        for i, s in enumerate(expiring_slots):
+        for i, s in enumerate(slots_to_fill):
             if i < len(chosen_picks):
                 sym = chosen_picks[i]
                 price = current_prices.get(sym, 100.0)
                 vol = volatilities.get(sym, 0.025)
-                stock_cash = net_investable_cash * weights[i]
+                stock_cash = cohort_budget * weights[i]
                 shares = int(stock_cash / (price * 1.003))
 
                 if shares > 0:
+                    stop_dist = (
+                        min(self.vol_stop_max, max(self.vol_stop_min, self.vol_stop_mult * vol))
+                        if self.use_vol_adaptive_stop
+                        else self.stop_loss_threshold
+                    )
+                    stop_px = round(price * (1.0 - stop_dist), 2)
                     buy_orders.append({
                         "action": "BUY_NEW_COHORT",
                         "slot_id": s["slot_id"],
                         "symbol": sym,
                         "shares": shares,
                         "price": price,
+                        "stop_price": stop_px,
                         "cash_allocated": round(stock_cash, 2),
                     })
                     s["symbol"] = sym
@@ -295,7 +351,8 @@ class PortfolioStateManager:
                     s["peak_price"] = price
                     s["peak_gain"] = 0.0
                     s["target_hit"] = False
-                    s["stop_price"] = price * (1.0 - self.stop_loss_threshold)
+                    s["volatility_20d"] = vol
+                    s["stop_price"] = stop_px
                     s["holding_bar"] = 0
                     s["expiry_bar"] = self.holding_bars
         total_spent = sum(b["shares"] * b["price"] * 1.003 for b in buy_orders)

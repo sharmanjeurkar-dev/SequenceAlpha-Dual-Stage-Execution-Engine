@@ -22,3 +22,5 @@ Data/liquidity_screener/snapshots/
 *.png
 *.csv
 graphs/
+frontend/node_modules/
+frontend/dist/
