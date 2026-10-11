@@ -21,6 +21,14 @@ Data/cache/
 Data/liquidity_screener/snapshots/
 *.png
 *.csv
-graphs/
+
+# Frontend artifacts
 frontend/node_modules/
 frontend/dist/
+
+# Live trading runtime state files
+*state*.json
+portfolio_state.json
+
+# System & Cache
+.DS_Store
