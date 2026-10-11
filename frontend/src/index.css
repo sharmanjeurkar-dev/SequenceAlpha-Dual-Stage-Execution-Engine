@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bb-black: #000000;
+    --bb-panel: #0a0d14;
+    --bb-panel-alt: #10151f;
+    --bb-border: #1c2433;
+    --bb-border-bright: #2d3848;
+    --bb-amber: #ff9900;
+    --bb-amber-dim: #cc7a00;
+    --bb-green: #00ff66;
+    --bb-green-dim: #00b347;
+    --bb-red: #ff3344;
+    --bb-cyan: #00e5ff;
+    --bb-gray: #7d8590;
+  }
+
+  body {
+    background-color: #030508;
+    color: #e6edf3;
+    font-family: 'JetBrains Mono', 'IBM Plex Mono', monospace, ui-monospace;
+    font-size: 12px;
+    margin: 0;
+    padding: 0;
+    user-select: none;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #root {
+    width: 100%;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+}
+
+/* Custom Bloomberg Scrollbars */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: #05070a;
+}
+::-webkit-scrollbar-thumb {
+  background: #232b38;
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #ff9900;
+}
+
+@keyframes ticker {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.animate-ticker {
+  display: flex;
+  width: 200%;
+  animation: ticker 35s linear infinite;
+}
+.animate-ticker:hover {
+  animation-play-state: paused;
+}
