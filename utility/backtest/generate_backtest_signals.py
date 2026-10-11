@@ -93,10 +93,11 @@ def generate_oos_predictions(checkpoint_dir="models/saved"):
         merged = merged.rename(columns={"Datetime": "date"})
 
         actual_lookup = test_df_reset.set_index([GROUP, TIMEIDX])[TARGET]
-        merged["actual_returns"] = merged.apply(
-            lambda r: actual_lookup.get((r[GROUP], r[TIMEIDX] + MAX_PRED_LENGTH), np.nan),
-            axis=1,
+        lookup_keys = pd.Series(
+            list(zip(merged[GROUP], merged[TIMEIDX] + MAX_PRED_LENGTH)),
+            index=merged.index,
         )
+        merged["actual_returns"] = lookup_keys.map(actual_lookup)
         merged["fold_id"] = fold_id
 
         # Strictly filter to out-of-sample evaluation period

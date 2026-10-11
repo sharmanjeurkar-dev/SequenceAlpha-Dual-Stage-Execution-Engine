@@ -127,6 +127,7 @@ class TFTTopNStrategy(bt.Strategy):
                     })
 
                     pos["shares"] -= matched_shares
+                    pos["entry_comm"] -= pro_rata_entry_comm
                     remaining_sell -= matched_shares
                     if pos["shares"] <= 0:
                         self._open_positions[sym].pop(0)
@@ -224,9 +225,20 @@ class TFTRollingCohortsStrategy(TFTTopNStrategy):
         ("daily_cohort_size", 3),
         ("cash_buffer", 0.05),
         ("min_score", -999.0),
+        ("require_positive_score", True),  # Conviction Gate: require p50 > 0.0 (calibrated directional boundary)
+        ("min_upside_skew", 1.25),         # Upside/Downside skew filter: p90 / |p10| >= 1.25 (46.79% CAGR / 1.70 Sharpe)
+        ("enable_regime_gate", False),     # Macro Regime Gate: throttle exposure when Nifty 50 < 200D SMA
+        ("regime_map", None),              # Dict[date, bool]: True = Bull/Normal regime, False = Bear regime
+        ("bear_cohort_size", 1),           # Max daily entries during Bear regime (down from 3)
+        ("bear_cash_buffer", 0.25),        # Cash buffer during Bear regime (up from 5% to 25%)
         ("use_dynamic_sizing", True),      # Pillar 1: Dynamic inverse-volatility sizing
-        ("enable_kill_switch", True),      # Hybrid: Mid-week emergency cut at -4.5%
-        ("kill_switch_threshold", 0.045),  # 4.5% loss stop
+        ("use_sharpe_ranking", False),     # Raw high-conviction p50 sorting captures top momentum leaders (31.91% CAGR)
+        ("enable_kill_switch", True),      # Hybrid: Mid-week emergency cut
+        ("kill_switch_threshold", 0.045),  # 4.5% flat loss stop (32.79% CAGR / 1.53 Sharpe / 15.75% MaxDD)
+        ("use_vol_adaptive_stop", False),  # Optional Clamped Volatility-Adaptive Stop Loss: clip(1.8 * vol_20d, 4.0%, 5.5%)
+        ("vol_stop_min", 0.040),           # 4.0% minimum stop floor for steady stocks
+        ("vol_stop_max", 0.055),           # 5.5% maximum stop cap for high-beta stocks
+        ("vol_stop_mult", 1.8),            # 1.8x daily volatility multiplier for momentum stocks
         ("enable_partial_profit", True),   # 50% profit booking at Target 1
         ("target_profit_threshold", 0.06), # Target 1 = +6.0% peak gain
         ("partial_exit_ratio", 0.50),      # Book 50% shares
@@ -318,7 +330,18 @@ class TFTRollingCohortsStrategy(TFTTopNStrategy):
                             s["entry_price"] = pos.price
                             s["peak_price"] = max(pos.price, d.high[0])
                             s["volatility"] = compute_feed_volatility(d)
-                            s["stop_price"] = s["entry_price"] * (1.0 - self.p.kill_switch_threshold)
+                            if self.p.use_vol_adaptive_stop:
+                                stop_dist = min(
+                                    self.p.vol_stop_max,
+                                    max(
+                                        self.p.vol_stop_min,
+                                        self.p.vol_stop_mult * s["volatility"],
+                                    ),
+                                )
+                            else:
+                                stop_dist = self.p.kill_switch_threshold
+                            s["stop_dist"] = stop_dist
+                            s["stop_price"] = s["entry_price"] * (1.0 - stop_dist)
                             s["target_hit"] = False
 
                         curr_high = d.high[0]
@@ -333,7 +356,7 @@ class TFTRollingCohortsStrategy(TFTTopNStrategy):
 
                         # Stage 1: Before Target 1 is hit
                         if not s["target_hit"]:
-                            # A. Initial Stop Loss at -4.5%
+                            # A. Initial Stop Loss (Volatility-Adaptive or Fixed)
                             if self.p.enable_kill_switch and curr_low <= s["stop_price"]:
                                 self._pending_exit_reason[d] = "Mid-Week Cut (-4.5%)"
                                 order = self.close(data=d)
@@ -391,7 +414,12 @@ class TFTRollingCohortsStrategy(TFTTopNStrategy):
                                         f"stop={s['stop_price']:.2f}. Slot refilling next bar."
                                     )
 
-        # 1. Collect valid candidates for today
+        # 1. Collect valid candidates for today (with Conviction & Skew Gates)
+        effective_min_score = (
+            max(self.p.min_score, 0.0)
+            if self.p.require_positive_score
+            else self.p.min_score
+        )
         candidates = []
         for d in self.datas:
             if len(d) > 0:
@@ -399,20 +427,33 @@ class TFTRollingCohortsStrategy(TFTTopNStrategy):
                 close_px = d.close[0]
                 if (
                     not math.isnan(score)
-                    and score >= self.p.min_score
+                    and score >= effective_min_score
                     and not math.isnan(close_px)
                     and close_px > 0
                 ):
-                    candidates.append((d, score))
+                    if self.p.min_upside_skew > 0.0 and hasattr(d, "p90") and hasattr(d, "p10"):
+                        p90_val = d.p90[0]
+                        p10_val = d.p10[0]
+                        if not math.isnan(p90_val) and not math.isnan(p10_val):
+                            skew_ratio = p90_val / max(abs(p10_val), 1e-6)
+                            if skew_ratio < self.p.min_upside_skew:
+                                continue
 
-        if not candidates:
-            return
+                    if self.p.use_sharpe_ranking:
+                        vol = compute_feed_volatility(d)
+                        # Volatility-adjusted Sharpe score: p50 / vol_20d
+                        rank_score = (score / (vol + 1e-6)) if score > 0 else (score * (1.0 + vol))
+                    else:
+                        rank_score = score
+                    candidates.append((d, rank_score, score))
 
         candidates.sort(key=lambda x: x[1], reverse=True)
         target_pct = (1.0 - self.p.cash_buffer) / self.p.total_positions
 
         # Day 1: Staggered initialization across holding_bars
         if self.bar_count == 1:
+            if not candidates:
+                return
             initial_picks = [c[0] for c in candidates[: self.p.total_positions]]
             investable_cash = self.broker.getcash() * (1.0 - self.p.cash_buffer)
             cash_per_stock = investable_cash / len(initial_picks)
@@ -458,7 +499,7 @@ class TFTRollingCohortsStrategy(TFTTopNStrategy):
                     else:
                         renewable_winning.add(d)
 
-        # 4. Form candidate selection for today's slots
+        # 4. Form candidate selection for today's slots (with Nifty 50 Macro Regime Gate)
         active_held = {
             s["stock"] for s in self.slots
             if s["stock"] is not None and s["expiry_bar"] > self.bar_count
@@ -474,7 +515,16 @@ class TFTRollingCohortsStrategy(TFTTopNStrategy):
             | self._pending_close
         )
 
-        num_needed = len(expiring_slots)
+        is_bear_regime = (
+            self.p.enable_regime_gate
+            and self.p.regime_map is not None
+            and not self.p.regime_map.get(dt, True)
+        )
+        num_needed = (
+            min(len(expiring_slots), self.p.bear_cohort_size)
+            if is_bear_regime
+            else len(expiring_slots)
+        )
         chosen_today = []
         for c in candidates:
             if len(chosen_today) >= num_needed:
@@ -503,16 +553,26 @@ class TFTRollingCohortsStrategy(TFTTopNStrategy):
                 s["stock"] = None
 
         if not chosen_today:
+            for s in expiring_slots:
+                s["stock"] = None
+                s["expiry_bar"] = self.bar_count + 1
+                s["entry_price"] = None
+                s["peak_gain"] = 0.0
             return
 
         # 6. Assign chosen stocks to expiring slots and deploy available capital dynamically
         current_liquid_cash = self.broker.getcash()
         total_available_cash = current_liquid_cash + expected_sales_proceeds
-        cash_reserve = curr_val * self.p.cash_buffer
+        effective_cash_buffer = (
+            max(self.p.cash_buffer, self.p.bear_cash_buffer)
+            if is_bear_regime
+            else self.p.cash_buffer
+        )
+        cash_reserve = curr_val * effective_cash_buffer
         net_investable_cash = max(0.0, total_available_cash - cash_reserve) * 0.995
 
         if not self.p.enable_capital_recycling:
-            max_static_budget = (curr_val * (1.0 - self.p.cash_buffer) / 5.0) * (len(chosen_today) / self.p.daily_cohort_size)
+            max_static_budget = (curr_val * (1.0 - effective_cash_buffer) / 5.0) * (len(chosen_today) / self.p.daily_cohort_size)
             net_investable_cash = min(net_investable_cash, max_static_budget)
 
         if len(chosen_today) > 0 and net_investable_cash > 1000.0:
