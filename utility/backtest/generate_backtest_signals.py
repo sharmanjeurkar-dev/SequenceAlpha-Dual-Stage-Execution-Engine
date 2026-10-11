@@ -7,7 +7,7 @@ import os
 import sys
 from datetime import datetime
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 import numpy as np
 import pandas as pd
@@ -27,8 +27,8 @@ from Executables.model_execute import (
     features,
 )
 
-OUTPUT_CACHE_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "Data", "cache", "tft_oos_predictions.parquet"
+OUTPUT_CACHE_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "Data", "cache", "tft_oos_predictions.parquet")
 )
 
 
@@ -93,10 +93,11 @@ def generate_oos_predictions(checkpoint_dir="models/saved"):
         merged = merged.rename(columns={"Datetime": "date"})
 
         actual_lookup = test_df_reset.set_index([GROUP, TIMEIDX])[TARGET]
-        merged["actual_returns"] = merged.apply(
-            lambda r: actual_lookup.get((r[GROUP], r[TIMEIDX] + MAX_PRED_LENGTH), np.nan),
-            axis=1,
+        lookup_keys = pd.Series(
+            list(zip(merged[GROUP], merged[TIMEIDX] + MAX_PRED_LENGTH)),
+            index=merged.index,
         )
+        merged["actual_returns"] = lookup_keys.map(actual_lookup)
         merged["fold_id"] = fold_id
 
         # Strictly filter to out-of-sample evaluation period
