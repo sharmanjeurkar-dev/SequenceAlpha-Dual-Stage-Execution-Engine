@@ -1,9 +1,6 @@
 import os
 import pickle
-import sys
 from datetime import datetime, timedelta
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import lightning.pytorch as pl
 import matplotlib.pyplot as plt
@@ -13,9 +10,7 @@ import torch
 from lightning.pytorch.callbacks import EarlyStopping
 from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
 from pytorch_forecasting.data import TorchNormalizer
-from pytorch_forecasting.metrics import QuantileLoss
 from scipy.stats import spearmanr
-from torch.utils.data import WeightedRandomSampler
 
 from Data.feature_engineering import (
     HISTORICAL_DATA_PATH,
@@ -26,6 +21,7 @@ from Data.historical_data.historical_data_scraper import (
     save_benchmark_data,
     save_histortrical_data,
 )
+from utility.DirectionalPeneltyLoss import HybridQuantileLoss
 
 TARGET = "Target"
 GROUP = "symbol"
@@ -45,13 +41,19 @@ features = [
     "Intraday_Spread_Zscore",
     "RSI-close-score",
     "relative_strength_60d",
-    "relative_strength_120d",
+    # "relative_strength_120d",
     "Vol_Percentile_Rank",
     "Beta_60D",
     "Pct_52W_High",
     "Returns_5D",
     "Intraday_Return",
     "EMA-Cross-Spread",
+    # "Short-Term-Momentum-ratio",
+    "Long-Term-Momentum-ratio",
+    "Volume-dry-up-ratio",
+    "Close-High-distance-20D",
+    "Volatility-Contraction",
+    "Volume-High-distance-20D",
 ]
 
 
@@ -93,7 +95,7 @@ def model_and_trainer_setup(training: TimeSeriesDataSet):
         attention_head_size=2,  # Down from 4
         dropout=0.25,  # Up from 0.1 (stronger regularization)
         hidden_continuous_size=8,  # Down from 16
-        loss=QuantileLoss(quantiles=[0.1, 0.5, 0.9]),
+        loss=HybridQuantileLoss(quantiles=[0.1, 0.5, 0.9]),
         learning_rate=7e-4,  # Slightly higher initial rate
         optimizer="adam",
         reduce_on_plateau_patience=2,  # Faster decay upon plateau
@@ -444,7 +446,7 @@ def run_walk_forward_pipeline():
         )
         print("\n\n\n")
         print("*" * 50)
-        print(metrics)
+        print(f"Fold:{metrics['fold']}|Mean ic:{metrics['daily_cs_ic']}")
         print("*" * 50)
         print("\n\n\n")
 
