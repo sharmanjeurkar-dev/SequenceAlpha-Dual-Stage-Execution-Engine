@@ -14,7 +14,7 @@ import numpy as np
 from datetime import datetime, date
 from typing import Dict, List, Tuple, Optional
 
-from utility.live.state_manager import PortfolioStateManager
+from utility.paper_trade.state_manager import PortfolioStateManager
 
 
 class PaperTradingEngine:
