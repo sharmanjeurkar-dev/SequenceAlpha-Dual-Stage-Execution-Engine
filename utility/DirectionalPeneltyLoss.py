@@ -1,4 +1,5 @@
 import torch
+from pytorch_forecasting import QuantileLoss
 from torch import nn
 
 
@@ -53,3 +54,37 @@ class SharpeRatio(nn.Module):
         )
 
         return -sharpe_ratio
+
+
+class HybridQuantileLoss(QuantileLoss):
+    def __init__(
+        self,
+        quantiles: list[float] | None = None,
+        dir_weights: float = 1.75,
+        smooth_scale: float = 50.0,
+    ):
+        if quantiles is None:
+            quantiles = [0.1, 0.5, 0.9]
+
+        super().__init__(quantiles=quantiles)
+        self.dir_weights = dir_weights
+        self.smooth_scale = smooth_scale
+
+    def loss(self, predicted: torch.Tensor, real: torch.Tensor) -> torch.Tensor:
+        raw_loss = super().loss(predicted, real)
+        p_50 = predicted[..., 1]
+
+        # Smooth, differentiable directional alignment in [-1, +1] across 0.0:
+        # +1 when p_50 and real share the same sign, -1 when opposite signs.
+        target_sign = torch.sign(real)
+        smooth_pred_sign = torch.tanh(self.smooth_scale * p_50)
+        sign_align = target_sign * smooth_pred_sign
+
+        # Smooth multiplier: 1.0 when aligned (+1), dir_weights (1.75) when opposite (-1)
+        direction_mult = 1.0 + (self.dir_weights - 1.0) * 0.5 * (1.0 - sign_align)
+
+        # Apply directional penalty strictly to p50 (index 1) so p10 and p90 remain pure quantiles
+        loss = raw_loss.clone()
+        loss[..., 1] = raw_loss[..., 1] * direction_mult
+        return loss
+
