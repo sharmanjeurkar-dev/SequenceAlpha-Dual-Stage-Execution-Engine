@@ -49,11 +49,11 @@ export const PortfolioEquityCurve: React.FC = () => {
               PORTFOLIO AUDIT
             </span>
             <h2 className="text-base font-bold text-white tracking-wide">
-              HISTORICAL EQUITY CURVE &amp; UNDERWATER DRAWDOWN
+              HISTORICAL OOS EQUITY CURVE &amp; UNDERWATER DRAWDOWN (CHAMPION STRATEGY)
             </h2>
           </div>
           <p className="text-xs text-gray-400 mt-0.5">
-            Strategy: Alpha-Harvest-Trailing-Uncapped-Recycling (929 daily execution sessions)
+            Strategy: Champion Flat -4.5% Stop + Asymmetric Skew &ge; 1.25 + p50 &gt; 0 (929 OOS daily sessions)
           </p>
         </div>
 
@@ -78,7 +78,7 @@ export const PortfolioEquityCurve: React.FC = () => {
       {/* KPI Cards Strip */}
       <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2">
         <div className="bg-[#0c1118] border border-[#1e2633] p-2 rounded border-l-2 border-l-[#00ff66]">
-          <div className="text-gray-400 text-[10px]">CURRENT EQUITY</div>
+          <div className="text-gray-400 text-[10px]">FINAL OOS EQUITY</div>
           <div className="text-sm font-extrabold text-[#00ff66] mt-0.5">
             ₹{latestPoint.Portfolio.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </div>
@@ -88,7 +88,7 @@ export const PortfolioEquityCurve: React.FC = () => {
         </div>
 
         <div className="bg-[#0c1118] border border-[#1e2633] p-2 rounded border-l-2 border-l-[#ff9900]">
-          <div className="text-gray-400 text-[10px]">TOTAL RETURN</div>
+          <div className="text-gray-400 text-[10px]">TOTAL OOS RETURN</div>
           <div className="text-sm font-extrabold text-[#ff9900] mt-0.5">
             +{netReturnPct.toFixed(2)}%
           </div>
@@ -99,26 +99,26 @@ export const PortfolioEquityCurve: React.FC = () => {
 
         <div className="bg-[#0c1118] border border-[#1e2633] p-2 rounded border-l-2 border-l-[#00e5ff]">
           <div className="text-gray-400 text-[10px]">CAGR</div>
-          <div className="text-sm font-extrabold text-[#00e5ff] mt-0.5">32.79%</div>
-          <div className="text-[10px] text-gray-400">3.75 Year History</div>
+          <div className="text-sm font-extrabold text-[#00e5ff] mt-0.5">46.79%</div>
+          <div className="text-[10px] text-gray-400">Folds 0–14 OOS</div>
         </div>
 
         <div className="bg-[#0c1118] border border-[#1e2633] p-2 rounded border-l-2 border-l-[#ff3344]">
           <div className="text-gray-400 text-[10px]">MAX DRAWDOWN</div>
-          <div className="text-sm font-extrabold text-[#ff3344] mt-0.5">-15.75%</div>
-          <div className="text-[10px] text-gray-400">Recovery: 110 Bars</div>
+          <div className="text-sm font-extrabold text-[#ff3344] mt-0.5">-16.01%</div>
+          <div className="text-[10px] text-gray-400">Calmar Ratio: 2.92</div>
         </div>
 
         <div className="bg-[#0c1118] border border-[#1e2633] p-2 rounded border-l-2 border-l-[#a855f7]">
           <div className="text-gray-400 text-[10px]">SHARPE RATIO</div>
-          <div className="text-sm font-extrabold text-[#a855f7] mt-0.5">1.53</div>
-          <div className="text-[10px] text-gray-400">Profit Factor: 1.34</div>
+          <div className="text-sm font-extrabold text-[#a855f7] mt-0.5">1.70</div>
+          <div className="text-[10px] text-gray-400">Sortino: 2.33 | PF: 1.54</div>
         </div>
 
         <div className="bg-[#0c1118] border border-[#1e2633] p-2 rounded border-l-2 border-l-[#eab308]">
           <div className="text-gray-400 text-[10px]">TOTAL TRADES</div>
-          <div className="text-sm font-extrabold text-white mt-0.5">3,079</div>
-          <div className="text-[10px] text-[#00ff66]">Win Rate: 45.2%</div>
+          <div className="text-sm font-extrabold text-white mt-0.5">2,377</div>
+          <div className="text-[10px] text-[#00ff66]">Win Rate: 49.05%</div>
         </div>
       </div>
 
@@ -176,7 +176,7 @@ export const PortfolioEquityCurve: React.FC = () => {
       <div className="bg-[#05070a] border border-[#1b2330] p-2 rounded">
         <div className="flex justify-between items-center mb-1 text-[11px] text-gray-400 px-2">
           <span className="text-[#ff3344] font-bold">● UNDERWATER DRAWDOWN (%)</span>
-          <span>Max Allowed Risk Floor: -16.0%</span>
+          <span>Max OOS Drawdown: -16.01%</span>
         </div>
         <div className="h-[120px] w-full">
           <ResponsiveContainer width="100%" height="100%">
@@ -204,7 +204,12 @@ export const PortfolioEquityCurve: React.FC = () => {
                 }}
                 formatter={(val: any) => [`${val}%`, 'Drawdown']}
               />
-              <ReferenceLine y={-15.75} stroke="#ff9900" strokeDasharray="3 3" label={{ value: 'MAX DD -15.75%', fill: '#ff9900', fontSize: 10 }} />
+              <ReferenceLine
+                y={-16.01}
+                stroke="#ff9900"
+                strokeDasharray="3 3"
+                label={{ value: 'MAX DD -16.01%', fill: '#ff9900', fontSize: 10 }}
+              />
               <Area
                 type="monotone"
                 dataKey="Drawdown_Pct"
@@ -221,19 +226,19 @@ export const PortfolioEquityCurve: React.FC = () => {
       <div className="grid grid-cols-4 gap-2 text-[11px]">
         <div className="bg-[#0c1118] border border-[#1e2633] p-2 rounded text-center">
           <div className="text-gray-400">2023 CALENDAR</div>
-          <div className="text-[#00ff66] font-bold text-sm mt-0.5">+41.2%</div>
+          <div className="text-[#00ff66] font-bold text-sm mt-0.5">+96.17%</div>
         </div>
         <div className="bg-[#0c1118] border border-[#1e2633] p-2 rounded text-center">
           <div className="text-gray-400">2024 CALENDAR</div>
-          <div className="text-[#00ff66] font-bold text-sm mt-0.5">+45.8%</div>
+          <div className="text-[#00ff66] font-bold text-sm mt-0.5">+86.88%</div>
         </div>
         <div className="bg-[#0c1118] border border-[#1e2633] p-2 rounded text-center">
           <div className="text-gray-400">2025 CALENDAR</div>
-          <div className="text-[#00ff66] font-bold text-sm mt-0.5">+38.5%</div>
+          <div className="text-[#00ff66] font-bold text-sm mt-0.5">+6.37%</div>
         </div>
         <div className="bg-[#0c1118] border border-[#1e2633] p-2 rounded text-center">
-          <div className="text-gray-400">2026 YTD</div>
-          <div className="text-[#00ff66] font-bold text-sm mt-0.5">+21.3%</div>
+          <div className="text-gray-400">2026 YTD (TO OCT)</div>
+          <div className="text-[#00ff66] font-bold text-sm mt-0.5">+6.50%</div>
         </div>
       </div>
     </div>

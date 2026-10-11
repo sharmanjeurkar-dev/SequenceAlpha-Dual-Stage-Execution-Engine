@@ -43,7 +43,7 @@ export const BloombergHeader: React.FC<HeaderProps> = ({
         <span className="font-bold text-[#ff9900] tracking-wide">SEQUENCE_ALPHA v2.4</span>
         <span className="text-[#7d8590]">|</span>
         <span className="text-gray-300 font-semibold hidden md:inline">
-          TFT DUAL-ACCOUNT EXECUTION ENGINE
+          TFT 14:50 EOD EXECUTION ENGINE (FYERS WS + KITE)
         </span>
         <span
           className={`text-[11px] px-1.5 py-0.2 rounded font-mono border ${
@@ -65,7 +65,7 @@ export const BloombergHeader: React.FC<HeaderProps> = ({
           />
           <span className="text-gray-400">FYERS WS:</span>
           <span className={`font-bold ${wsConnected ? 'text-[#00ff66]' : 'text-[#ff3344]'}`}>
-            {wsConnected ? '2.4ms OK' : 'DISCONNECTED'}
+            {wsConnected ? 'LIVE (5s THROTTLE)' : 'SIMULATED / REST'}
           </span>
         </div>
 
@@ -84,7 +84,7 @@ export const BloombergHeader: React.FC<HeaderProps> = ({
         <div className="flex items-center gap-1.5 font-bold">
           <Clock className="w-3.5 h-3.5 text-gray-400" />
           <span className="text-white bg-[#131b26] px-2 py-0.5 rounded border border-[#212936]">
-            {istTime || '15:05:00 IST'}
+            {istTime || '14:50:00 IST'}
           </span>
         </div>
 

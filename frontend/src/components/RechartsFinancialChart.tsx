@@ -16,13 +16,14 @@ interface ChartProps {
   onSetMode: (mode: 'slot_trail' | 'equity_curve' | 'tft_fan') => void;
   symbol: string;
   slotPriceData: Array<{ time: string; price: number; stop: number; target: number }>;
-  equityData: Array<{ date: string; account_a: number; account_b: number; benchmark: number }>;
+  equityData: Array<{ date: string; portfolio_value: number; invested_value: number; benchmark: number }>;
   tftFanData: Array<{ step: string; p10: number; p50: number; p90: number }>;
   stopPrice?: number;
   targetPrice?: number;
   entryPrice?: number;
   ltp?: number;
   pnlPct?: number;
+  holdingBar?: number;
   onRatchetStop: () => void;
   onHarvestFifty: () => void;
   onEmergencyClose: () => void;
@@ -40,6 +41,7 @@ export const RechartsFinancialChart: React.FC<ChartProps> = ({
   entryPrice,
   ltp,
   pnlPct,
+  holdingBar = 1,
   onRatchetStop,
   onHarvestFifty,
   onEmergencyClose,
@@ -50,7 +52,7 @@ export const RechartsFinancialChart: React.FC<ChartProps> = ({
       <div className="flex flex-wrap items-center justify-between border-b border-[#1e2633] pb-2 gap-2">
         <div className="flex items-center gap-2">
           <span className="text-[#ff9900] font-bold">CHART.VIEW</span>
-          <span className="text-white font-bold">{symbol} (AlphaHarvest Trailing Stop)</span>
+          <span className="text-white font-bold">{symbol} (Champion Flat -4.5% Stop &amp; Trailing)</span>
           <span className="text-[11px] text-[#00ff66] bg-[#0c1f13] px-1.5 py-0.2 rounded border border-[#00ff66]">
             REALTIME
           </span>
@@ -76,7 +78,7 @@ export const RechartsFinancialChart: React.FC<ChartProps> = ({
                 : 'bg-[#161f2a] text-gray-300 hover:text-white'
             }`}
           >
-            EQUITY CURVE
+            PAPER EQUITY
           </button>
           <button
             onClick={() => onSetMode('tft_fan')}
@@ -115,11 +117,11 @@ export const RechartsFinancialChart: React.FC<ChartProps> = ({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-[#7d8590]">Clamped Vol-Stop:</span>
+          <span className="text-[#7d8590]">Active Stop:</span>
           <span className="text-[#ff9900] font-bold">
             ₹{stopPrice ? stopPrice.toFixed(2) : '--'}
           </span>
-          <span className="text-[10px] text-gray-400">Holding Bar: 2/5</span>
+          <span className="text-[10px] text-gray-400">Holding Bar: {holdingBar}/5</span>
         </div>
       </div>
 
@@ -189,16 +191,16 @@ export const RechartsFinancialChart: React.FC<ChartProps> = ({
               />
               <Line
                 type="monotone"
-                dataKey="account_a"
-                name="Account A (MOC 15:05)"
+                dataKey="portfolio_value"
+                name="14:50 EOD Paper Portfolio"
                 stroke="#00ff66"
                 strokeWidth={2.5}
                 dot={false}
               />
               <Line
                 type="monotone"
-                dataKey="account_b"
-                name="Account B (Morning 09:20)"
+                dataKey="invested_value"
+                name="Invested Exposure"
                 stroke="#00e5ff"
                 strokeWidth={2}
                 dot={false}
@@ -206,7 +208,7 @@ export const RechartsFinancialChart: React.FC<ChartProps> = ({
               <Line
                 type="monotone"
                 dataKey="benchmark"
-                name="Nifty 50 Benchmark"
+                name="Initial Capital (₹10L)"
                 stroke="#718096"
                 strokeDasharray="3 3"
                 strokeWidth={1.5}
@@ -263,7 +265,7 @@ export const RechartsFinancialChart: React.FC<ChartProps> = ({
       {/* Control Buttons Strip */}
       <div className="flex flex-wrap items-center justify-between text-[11px] pt-2 gap-2">
         <div className="text-gray-400">
-          Strategy: Alpha-Harvest-Trailing-Uncapped-Recycling | Exit: Target 1 + Trailing Vol Stop
+          Strategy: Champion Flat -4.5% Stop + Skew &ge; 1.25 | Exit: +6% Tgt1 (50% Book + +1% Ratchet)
         </div>
         <div className="flex items-center gap-1.5">
           <button

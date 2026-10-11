@@ -81,7 +81,7 @@ export const TrancheMatrix: React.FC<TrancheMatrixProps> = ({
 
       {/* Active Slots Table */}
       <div className="text-[11px] font-bold text-[#ff9900] pt-1">
-        ACTIVE PORTFOLIO SLOTS (ACCOUNT A)
+        ACTIVE PORTFOLIO SLOTS (14:50 EOD CONTINUOUS ACCOUNT)
       </div>
       <div className="overflow-y-auto max-h-[250px] border border-[#1e2633] rounded-sm">
         <table className="w-full text-left text-[11px] border-collapse">
@@ -89,6 +89,7 @@ export const TrancheMatrix: React.FC<TrancheMatrixProps> = ({
             <tr>
               <th className="p-1.5">SLOT</th>
               <th className="p-1.5">SYMBOL</th>
+              <th className="p-1.5">SHARES</th>
               <th className="p-1.5">ENTRY</th>
               <th className="p-1.5">LTP</th>
               <th className="p-1.5">P&amp;L %</th>
@@ -118,6 +119,7 @@ export const TrancheMatrix: React.FC<TrancheMatrixProps> = ({
                       #{s.slot_id}
                     </td>
                     <td className="p-1.5 font-bold">{s.symbol}</td>
+                    <td className="p-1.5 text-gray-300">{s.current_shares}</td>
                     <td className="p-1.5 text-gray-300">₹{s.entry_price.toFixed(2)}</td>
                     <td
                       className={`p-1.5 font-bold ${
@@ -162,13 +164,13 @@ export const TrancheMatrix: React.FC<TrancheMatrixProps> = ({
 
       <div className="text-[10px] text-gray-400 flex items-center justify-between bg-[#0e1219] p-1.5 rounded border border-[#1b2330]">
         <span>
-          Cohort: <span className="text-white font-bold">15:05 IST (3 slots/day)</span>
+          Rebalance: <span className="text-white font-bold">14:50 IST (3 slots/day)</span>
         </span>
         <span>
-          Target Profit: <span className="text-[#00ff66] font-bold">+6.0%</span>
+          Target 1: <span className="text-[#00ff66] font-bold">+6.0% (50% Book)</span>
         </span>
         <span>
-          Stop Cut: <span className="text-[#ff3344] font-bold">-4.5%</span>
+          Flat Stop: <span className="text-[#ff3344] font-bold">-4.5%</span>
         </span>
       </div>
     </div>

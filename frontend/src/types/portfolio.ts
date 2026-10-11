@@ -16,32 +16,47 @@ export interface TrancheSlot {
   pnl_pct: number;
 }
 
-export interface DualAccountMetrics {
+export interface DailySummaryMetric {
   date: string;
-  account_a_value: number;
-  account_b_value: number;
-  account_a_pnl_day: number;
-  account_b_pnl_day: number;
-  account_a_cum_return_pct: number;
-  account_b_cum_return_pct: number;
-  account_a_active_slots: number;
-  account_b_active_slots: number;
-  account_a_win_rate_pct: number;
-  account_b_win_rate_pct: number;
-  leader: string;
+  portfolio_value: number;
+  cash_balance: number;
+  invested_value: number;
+  pnl_day: number;
+  cum_return_pct: number;
+  active_slots: number;
+  win_rate_pct: number;
+  total_trades: number;
+}
+
+export interface PaperTradeRecord {
+  trade_id: string | number;
+  symbol: string;
+  entry_date: string;
+  exit_date: string;
+  holding_days: number;
+  shares: number;
+  entry_price: number;
+  exit_price: number;
+  net_pnl: number;
+  net_return_pct: number;
+  outcome: 'WIN' | 'LOSS';
+  exit_reason: string;
 }
 
 export interface FyersOrder {
   order_id: string;
   timestamp: string;
-  account: 'ACCT_A' | 'ACCT_B';
   symbol: string;
   side: 'BUY' | 'SELL';
+  action: string;
   order_type: 'MKT' | 'LMT' | 'SL-M';
   quantity: number;
   fill_price: number;
+  turnover: number;
+  commission: number;
   slippage_bps: number;
-  strategy_tag: 'COHORT_ENTRY' | 'TARGET_1_EXIT' | 'TRAILING_STOP' | 'TIME_EXPIRY' | 'MANUAL';
+  strategy_tag: 'COHORT_ENTRY' | 'TARGET_1_EXIT' | 'TRAILING_STOP' | 'EMERGENCY_STOP' | 'TIME_EXPIRY' | 'MANUAL';
+  reason?: string;
   status: 'PENDING' | 'FILLED' | 'CANCELLED' | 'REJECTED';
 }
 
@@ -50,6 +65,7 @@ export interface TftQuantileInference {
   p10_bearish: number;
   p50_median_alpha: number;
   p90_bullish_breakout: number;
+  upside_skew: number;
   conviction_score: number;
   directional_loss: number;
   decile_rank: number;

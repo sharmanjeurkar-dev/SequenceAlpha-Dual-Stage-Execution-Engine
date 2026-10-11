@@ -30,7 +30,7 @@ export const TerminalCommandLine: React.FC<TerminalCommandLineProps> = ({
           type="text"
           value={cmd}
           onChange={(e) => setCmd(e.target.value)}
-          placeholder="Type command (e.g., BUY INDOTHAI 500, RATCHET 0, EQUITY, HALT, HELP) and press <ENTER>..."
+          placeholder="Type command (e.g., BUY RESPONIND 465, RATCHET 0, EQUITY, LEDGER, HALT, HELP) and press <ENTER>..."
           className="flex-1 bg-[#05070a] border border-[#232d3d] focus:border-[#ff9900] focus:outline-none px-2.5 py-1 text-white font-mono text-xs rounded-sm placeholder-gray-600"
         />
         <button
@@ -65,7 +65,7 @@ export const TerminalCommandLine: React.FC<TerminalCommandLineProps> = ({
           onClick={() => onSwitchTab('dual')}
           className="text-white hover:text-[#ff9900] cursor-pointer"
         >
-          [F4: DUAL ARB]
+          [F4: EOD LEDGER]
         </button>
         <button
           onClick={() => onSwitchTab('tft')}

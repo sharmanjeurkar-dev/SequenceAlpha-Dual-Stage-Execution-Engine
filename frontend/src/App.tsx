@@ -12,7 +12,8 @@ import { TerminalCommandLine } from './components/TerminalCommandLine';
 import { useWebSocketStream } from './hooks/useWebSocketStream';
 import type {
   TrancheSlot,
-  DualAccountMetrics,
+  DailySummaryMetric,
+  PaperTradeRecord,
   FyersOrder,
   TftQuantileInference,
   TickerItem,
@@ -27,176 +28,172 @@ export const App: React.FC = () => {
   const [selectedSlotId, setSelectedSlotId] = useState<number>(0);
   const [audioEnabled, setAudioEnabled] = useState<boolean>(true);
 
-  // Financial State
-  const [totalAum] = useState<number>(1004213.61);
-  const [cashBuffer] = useState<number>(546810.77);
-  const [accountAValue] = useState<number>(1004213.61);
-  const [accountBValue] = useState<number>(1003632.95);
-
-  // Real-time WebSocket connection to SequenceAlpha Python engine
-  const { isConnected: wsConnected, sendCommand } = useWebSocketStream({
-    url: 'ws://localhost:8765/ws',
-    onStateUpdate: (msg) => {
-      if (msg.type === 'TICK_UPDATE') {
-        // Automatically sync state when python backend is running
-      }
-    },
+  // Single-Account 14:50 EOD Continuous Paper Trading State (synced with portfolio_state.json & paper_trading_daily_summary.csv)
+  const [totalAum, setTotalAum] = useState<number>(993941.81);
+  const [cashBuffer, setCashBuffer] = useState<number>(363715.01);
+  const [investedValue, setInvestedValue] = useState<number>(630226.8);
+  const [quarantineList, setQuarantineList] = useState<Record<string, number>>({
+    'NSE:MANALIPETC': 1,
+    'NSE:GPTINFRA': 5,
   });
 
-  // Ticker stream items
-  const [tickerItems] = useState<TickerItem[]>([
-    { symbol: 'NIFTY 50', price: 25124.5, change_pct: 0.34, up: true },
-    { symbol: 'BANKNIFTY', price: 51890.1, change_pct: -0.12, up: false },
-    { symbol: 'NSE:INDOTHAI-EQ', price: 40.71, change_pct: 10.21, up: true },
-    { symbol: 'NSE:RESPONIND-EQ', price: 161.8, change_pct: 1.3, up: true },
-    { symbol: 'NSE:MANALIPETC-EQ', price: 84.15, change_pct: 3.25, up: true },
-    { symbol: 'NSE:VINDHYATEL-EQ', price: 2450.0, change_pct: 1.66, up: true },
-    { symbol: 'NSE:SUPERHOUSE-EQ', price: 231.8, change_pct: 2.16, up: true },
-    { symbol: 'NSE:SHREDIGCEM-EQ', price: 62.4, change_pct: -0.64, up: false },
-    { symbol: 'NSE:ALOKINDS-EQ', price: 24.3, change_pct: -1.22, up: false },
-    { symbol: 'NSE:DCW-EQ', price: 56.1, change_pct: 3.51, up: true },
-  ]);
-
-  // 15 Tranche Slots
+  // 15 Tranche Slots (initial state synced with portfolio_state.json as of 2026-10-07 15:35 EOD)
   const [slots, setSlots] = useState<TrancheSlot[]>([
     {
       slot_id: 0,
-      symbol: 'NSE:INDOTHAI-EQ',
-      entry_date: '2026-10-05',
-      entry_price: 36.94,
-      ltp: 40.71,
-      current_shares: 724,
-      original_shares: 1447,
-      peak_price: 40.71,
-      peak_gain: 0.102,
-      target_hit: true,
-      stop_price: 37.31,
-      holding_bar: 2,
-      expiry_bar: 5,
-      volatility_20d: 0.025,
-      pnl_pct: 10.21,
-    },
-    {
-      slot_id: 1,
       symbol: 'NSE:RESPONIND-EQ',
       entry_date: '2026-10-07',
       entry_price: 159.73,
-      ltp: 161.8,
-      current_shares: 492,
-      original_shares: 492,
-      peak_price: 161.8,
-      peak_gain: 0.013,
+      ltp: 158.95,
+      current_shares: 465,
+      original_shares: 465,
+      peak_price: 159.73,
+      peak_gain: 0.0,
       target_hit: false,
       stop_price: 152.54,
       holding_bar: 1,
       expiry_bar: 5,
-      volatility_20d: 0.031,
-      pnl_pct: 1.3,
+      volatility_20d: 0.0363,
+      pnl_pct: -0.49,
+    },
+    {
+      slot_id: 1,
+      symbol: 'NSE:SHREDIGCEM-EQ',
+      entry_date: '2026-10-07',
+      entry_price: 90.06,
+      ltp: 89.62,
+      current_shares: 825,
+      original_shares: 825,
+      peak_price: 90.06,
+      peak_gain: 0.0,
+      target_hit: false,
+      stop_price: 86.01,
+      holding_bar: 1,
+      expiry_bar: 5,
+      volatility_20d: 0.0252,
+      pnl_pct: -0.49,
     },
     {
       slot_id: 2,
-      symbol: 'NSE:MANALIPETC-EQ',
-      entry_date: '2026-10-06',
-      entry_price: 81.5,
-      ltp: 84.15,
-      current_shares: 960,
-      original_shares: 960,
-      peak_price: 84.15,
-      peak_gain: 0.0325,
+      symbol: 'NSE:PFOCUS-EQ',
+      entry_date: '2026-10-01',
+      entry_price: 162.87,
+      ltp: 165.45,
+      current_shares: 407,
+      original_shares: 407,
+      peak_price: 165.62,
+      peak_gain: 0.0169,
       target_hit: false,
-      stop_price: 77.85,
-      holding_bar: 2,
+      stop_price: 155.54,
+      holding_bar: 3,
       expiry_bar: 5,
-      volatility_20d: 0.028,
-      pnl_pct: 3.25,
+      volatility_20d: 0.0439,
+      pnl_pct: 1.58,
     },
     {
       slot_id: 3,
-      symbol: 'NSE:VINDHYATEL-EQ',
-      entry_date: '2026-10-06',
-      entry_price: 2410.0,
-      ltp: 2450.0,
-      current_shares: 32,
-      original_shares: 32,
-      peak_price: 2450.0,
-      peak_gain: 0.0166,
+      symbol: 'NSE:GLOBALVECT-EQ',
+      entry_date: '2026-10-01',
+      entry_price: 229.01,
+      ltp: 223.09,
+      current_shares: 289,
+      original_shares: 289,
+      peak_price: 229.01,
+      peak_gain: 0.0,
       target_hit: false,
-      stop_price: 2301.5,
-      holding_bar: 2,
+      stop_price: 218.71,
+      holding_bar: 3,
       expiry_bar: 5,
-      volatility_20d: 0.027,
-      pnl_pct: 1.66,
+      volatility_20d: 0.0243,
+      pnl_pct: -2.59,
     },
     {
       slot_id: 4,
-      symbol: 'NSE:SUPERHOUSE-EQ',
-      entry_date: '2026-10-05',
-      entry_price: 226.9,
-      ltp: 231.8,
-      current_shares: 345,
-      original_shares: 345,
-      peak_price: 231.8,
-      peak_gain: 0.0216,
+      symbol: 'NSE:GFLLIMITED-EQ',
+      entry_date: '2026-10-01',
+      entry_price: 75.56,
+      ltp: 75.08,
+      current_shares: 877,
+      original_shares: 877,
+      peak_price: 75.77,
+      peak_gain: 0.0028,
       target_hit: false,
-      stop_price: 216.7,
+      stop_price: 72.16,
       holding_bar: 3,
       expiry_bar: 5,
-      volatility_20d: 0.03,
-      pnl_pct: 2.16,
-    },
-    {
-      slot_id: 5,
-      symbol: 'NSE:SHREDIGCEM-EQ',
-      entry_date: '2026-10-07',
-      entry_price: 62.8,
-      ltp: 62.4,
-      current_shares: 1250,
-      original_shares: 1250,
-      peak_price: 62.8,
-      peak_gain: 0.0,
-      target_hit: false,
-      stop_price: 59.95,
-      holding_bar: 1,
-      expiry_bar: 5,
-      volatility_20d: 0.029,
+      volatility_20d: 0.0138,
       pnl_pct: -0.64,
     },
     {
-      slot_id: 6,
-      symbol: 'NSE:ALOKINDS-EQ',
+      slot_id: 5,
+      symbol: 'NSE:TVSELECT-EQ',
       entry_date: '2026-10-05',
-      entry_price: 24.6,
-      ltp: 24.3,
-      current_shares: 3200,
-      original_shares: 3200,
-      peak_price: 24.6,
-      peak_gain: 0.0,
+      entry_price: 404.04,
+      ltp: 394.68,
+      current_shares: 183,
+      original_shares: 183,
+      peak_price: 406.0,
+      peak_gain: 0.0049,
       target_hit: false,
-      stop_price: 23.5,
-      holding_bar: 3,
+      stop_price: 385.86,
+      holding_bar: 2,
       expiry_bar: 5,
-      volatility_20d: 0.033,
-      pnl_pct: -1.22,
+      volatility_20d: 0.0472,
+      pnl_pct: -2.32,
+    },
+    {
+      slot_id: 6,
+      symbol: 'NSE:ALMONDZ-EQ',
+      entry_date: '2026-10-05',
+      entry_price: 19.65,
+      ltp: 20.51,
+      current_shares: 3774,
+      original_shares: 3774,
+      peak_price: 20.51,
+      peak_gain: 0.0439,
+      target_hit: false,
+      stop_price: 18.76,
+      holding_bar: 2,
+      expiry_bar: 5,
+      volatility_20d: 0.0273,
+      pnl_pct: 4.38,
     },
     {
       slot_id: 7,
-      symbol: 'NSE:DCW-EQ',
+      symbol: 'NSE:IVC-EQ',
       entry_date: '2026-10-06',
-      entry_price: 54.2,
-      ltp: 56.1,
-      current_shares: 1450,
-      original_shares: 1450,
-      peak_price: 56.1,
-      peak_gain: 0.0351,
+      entry_price: 53.78,
+      ltp: 54.03,
+      current_shares: 1383,
+      original_shares: 1383,
+      peak_price: 54.03,
+      peak_gain: 0.0046,
       target_hit: false,
-      stop_price: 51.75,
-      holding_bar: 2,
+      stop_price: 51.36,
+      holding_bar: 1,
       expiry_bar: 5,
-      volatility_20d: 0.026,
-      pnl_pct: 3.51,
+      volatility_20d: 0.0148,
+      pnl_pct: 0.46,
     },
-    ...Array.from({ length: 7 }, (_, i) => ({
-      slot_id: i + 8,
+    {
+      slot_id: 8,
+      symbol: 'NSE:GENCON-EQ',
+      entry_date: '2026-10-06',
+      entry_price: 109.16,
+      ltp: 105.0,
+      current_shares: 681,
+      original_shares: 681,
+      peak_price: 109.16,
+      peak_gain: 0.0,
+      target_hit: false,
+      stop_price: 104.25,
+      holding_bar: 1,
+      expiry_bar: 5,
+      volatility_20d: 0.0298,
+      pnl_pct: -3.81,
+    },
+    ...Array.from({ length: 6 }, (_, i) => ({
+      slot_id: i + 9,
       symbol: null,
       entry_date: null,
       entry_price: 0,
@@ -214,149 +211,471 @@ export const App: React.FC = () => {
     })),
   ]);
 
-  // Order Blotter
+  // Order Blotter (synced with paper_orders_log.csv)
   const [orders, setOrders] = useState<FyersOrder[]>([
     {
-      order_id: 'FY-90214',
-      timestamp: '15:05:01',
-      account: 'ACCT_A',
-      symbol: 'NSE:RESPONIND-EQ',
+      order_id: 'ORD-0023',
+      timestamp: '2026-10-07 14:50',
+      symbol: 'NSE:SHREDIGCEM-EQ',
       side: 'BUY',
+      action: 'COHORT_ENTRY',
       order_type: 'MKT',
-      quantity: 492,
-      fill_price: 159.73,
-      slippage_bps: 3.2,
+      quantity: 825,
+      fill_price: 90.06,
+      turnover: 74302.18,
+      commission: 163.46,
+      slippage_bps: 5.0,
       strategy_tag: 'COHORT_ENTRY',
       status: 'FILLED',
     },
     {
-      order_id: 'FY-90188',
-      timestamp: '14:52:10',
-      account: 'ACCT_A',
+      order_id: 'ORD-0022',
+      timestamp: '2026-10-07 14:50',
+      symbol: 'NSE:RESPONIND-EQ',
+      side: 'BUY',
+      action: 'COHORT_ENTRY',
+      order_type: 'MKT',
+      quantity: 465,
+      fill_price: 159.73,
+      turnover: 74274.22,
+      commission: 163.4,
+      slippage_bps: 5.0,
+      strategy_tag: 'COHORT_ENTRY',
+      status: 'FILLED',
+    },
+    {
+      order_id: 'ORD-0021',
+      timestamp: '2026-10-07 14:50',
+      symbol: 'NSE:SUPERHOUSE-EQ',
+      side: 'SELL',
+      action: 'TIME_STOP_5D',
+      order_type: 'MKT',
+      quantity: 451,
+      fill_price: 154.01,
+      turnover: 69459.84,
+      commission: 152.81,
+      slippage_bps: 5.0,
+      strategy_tag: 'TIME_EXPIRY',
+      status: 'FILLED',
+    },
+    {
+      order_id: 'ORD-0020',
+      timestamp: '2026-10-07 14:50',
+      symbol: 'NSE:VINDHYATEL-EQ',
+      side: 'SELL',
+      action: 'TIME_STOP_5D',
+      order_type: 'MKT',
+      quantity: 54,
+      fill_price: 1219.99,
+      turnover: 65879.43,
+      commission: 144.93,
+      slippage_bps: 5.0,
+      strategy_tag: 'TIME_EXPIRY',
+      status: 'FILLED',
+    },
+    {
+      order_id: 'ORD-0019',
+      timestamp: '2026-10-07 14:50',
       symbol: 'NSE:INDOTHAI-EQ',
       side: 'SELL',
+      action: 'TIME_STOP_5D',
+      order_type: 'MKT',
+      quantity: 912,
+      fill_price: 40.53,
+      turnover: 36963.13,
+      commission: 81.32,
+      slippage_bps: 5.0,
+      strategy_tag: 'TIME_EXPIRY',
+      status: 'FILLED',
+    },
+    {
+      order_id: 'ORD-0018',
+      timestamp: '2026-10-07 10:15',
+      symbol: 'NSE:GPTINFRA-EQ',
+      side: 'SELL',
+      action: 'STOP_LOSS',
+      order_type: 'MKT',
+      quantity: 625,
+      fill_price: 113.5,
+      turnover: 70937.41,
+      commission: 156.06,
+      slippage_bps: 5.0,
+      strategy_tag: 'EMERGENCY_STOP',
+      status: 'FILLED',
+    },
+    {
+      order_id: 'ORD-0014',
+      timestamp: '2026-10-06 10:15',
+      symbol: 'NSE:INDOTHAI-EQ',
+      side: 'SELL',
+      action: 'TARGET_1_PARTIAL',
       order_type: 'LMT',
-      quantity: 723,
-      fill_price: 39.16,
+      quantity: 912,
+      fill_price: 40.71,
+      turnover: 37124.21,
+      commission: 81.67,
       slippage_bps: 0.0,
       strategy_tag: 'TARGET_1_EXIT',
       status: 'FILLED',
     },
-    {
-      order_id: 'FY-90150',
-      timestamp: '14:50:00',
-      account: 'ACCT_A',
-      symbol: 'NSE:SHREDIGCEM-EQ',
-      side: 'BUY',
-      order_type: 'MKT',
-      quantity: 1250,
-      fill_price: 62.8,
-      slippage_bps: 4.1,
-      strategy_tag: 'COHORT_ENTRY',
-      status: 'FILLED',
-    },
-    {
-      order_id: 'FY-89942',
-      timestamp: '09:20:15',
-      account: 'ACCT_B',
-      symbol: 'NSE:MANALIPETC-EQ',
-      side: 'BUY',
-      order_type: 'MKT',
-      quantity: 960,
-      fill_price: 81.5,
-      slippage_bps: 6.8,
-      strategy_tag: 'COHORT_ENTRY',
-      status: 'FILLED',
-    },
   ]);
 
-  // Dual Account Historical Comparisons
-  const [metricsHistory] = useState<DualAccountMetrics[]>([
+  // Single-Account Daily Summary (synced with paper_trading_daily_summary.csv)
+  const [dailySummary, setDailySummary] = useState<DailySummaryMetric[]>([
+    {
+      date: '2026-09-29',
+      portfolio_value: 999357.87,
+      cash_balance: 800419.63,
+      invested_value: 198938.24,
+      pnl_day: -642.13,
+      cum_return_pct: -0.06,
+      active_slots: 3,
+      win_rate_pct: 0.0,
+      total_trades: 0,
+    },
+    {
+      date: '2026-09-30',
+      portfolio_value: 998501.43,
+      cash_balance: 601207.22,
+      invested_value: 397294.21,
+      pnl_day: -856.44,
+      cum_return_pct: -0.15,
+      active_slots: 6,
+      win_rate_pct: 0.0,
+      total_trades: 0,
+    },
+    {
+      date: '2026-10-01',
+      portfolio_value: 999749.26,
+      cash_balance: 402759.2,
+      invested_value: 596990.06,
+      pnl_day: 1247.83,
+      cum_return_pct: -0.03,
+      active_slots: 9,
+      win_rate_pct: 0.0,
+      total_trades: 0,
+    },
     {
       date: '2026-10-05',
-      account_a_value: 999405.25,
-      account_b_value: 1000000.0,
-      account_a_pnl_day: -594.75,
-      account_b_pnl_day: 0.0,
-      account_a_cum_return_pct: -0.06,
-      account_b_cum_return_pct: 0.0,
-      account_a_active_slots: 3,
-      account_b_active_slots: 0,
-      account_a_win_rate_pct: 0.0,
-      account_b_win_rate_pct: 0.0,
-      leader: 'Account B (Morning)',
+      portfolio_value: 996228.59,
+      cash_balance: 446431.4,
+      invested_value: 549797.19,
+      pnl_day: -3520.67,
+      cum_return_pct: -0.38,
+      active_slots: 8,
+      win_rate_pct: 0.0,
+      total_trades: 4,
     },
     {
       date: '2026-10-06',
-      account_a_value: 1007052.0,
-      account_b_value: 1007168.93,
-      account_a_pnl_day: 6027.62,
-      account_b_pnl_day: 6612.76,
-      account_a_cum_return_pct: 0.71,
-      account_b_cum_return_pct: 0.72,
-      account_a_active_slots: 6,
-      account_b_active_slots: 3,
-      account_a_win_rate_pct: 100.0,
-      account_b_win_rate_pct: 100.0,
-      leader: 'Account B (Morning)',
+      portfolio_value: 1002298.89,
+      cash_balance: 260740.3,
+      invested_value: 741558.59,
+      pnl_day: 6070.3,
+      cum_return_pct: 0.23,
+      active_slots: 11,
+      win_rate_pct: 20.0,
+      total_trades: 5,
     },
     {
       date: '2026-10-07',
-      account_a_value: 1004213.61,
-      account_b_value: 1003937.45,
-      account_a_pnl_day: -2930.5,
-      account_b_pnl_day: -2640.32,
-      account_a_cum_return_pct: 0.42,
-      account_b_cum_return_pct: 0.39,
-      account_a_active_slots: 8,
-      account_b_active_slots: 5,
-      account_a_win_rate_pct: 66.67,
-      account_b_win_rate_pct: 66.67,
-      leader: 'Account A (14:50 EOD)',
-    },
-    {
-      date: '2026-10-08',
-      account_a_value: 1004213.61,
-      account_b_value: 1003632.95,
-      account_a_pnl_day: 0.0,
-      account_b_pnl_day: -304.5,
-      account_a_cum_return_pct: 0.42,
-      account_b_cum_return_pct: 0.36,
-      account_a_active_slots: 8,
-      account_b_active_slots: 8,
-      account_a_win_rate_pct: 66.67,
-      account_b_win_rate_pct: 66.67,
-      leader: 'Account A (14:50 EOD)',
+      portfolio_value: 993941.81,
+      cash_balance: 363715.01,
+      invested_value: 630226.8,
+      pnl_day: -8357.08,
+      cum_return_pct: -0.61,
+      active_slots: 9,
+      win_rate_pct: 33.33,
+      total_trades: 9,
     },
   ]);
 
-  // TFT Model Candidates
+  // Closed Trades Ledger (synced with paper_trades_log.csv)
+  const [closedTrades, setClosedTrades] = useState<PaperTradeRecord[]>([
+    {
+      trade_id: 1,
+      entry_date: '2026-09-29',
+      exit_date: '2026-10-05',
+      holding_days: 4,
+      symbol: 'MANALIPETC',
+      shares: 1020,
+      entry_price: 64.94,
+      exit_price: 61.98,
+      net_pnl: -3300.39,
+      net_return_pct: -4.55,
+      outcome: 'LOSS',
+      exit_reason: 'STOP_LOSS',
+    },
+    {
+      trade_id: 2,
+      entry_date: '2026-09-29',
+      exit_date: '2026-10-05',
+      holding_days: 4,
+      symbol: 'DCW',
+      shares: 997,
+      entry_price: 66.43,
+      exit_price: 65.58,
+      net_pnl: -1139.03,
+      net_return_pct: -1.28,
+      outcome: 'LOSS',
+      exit_reason: 'TIME_STOP_5D',
+    },
+    {
+      trade_id: 3,
+      entry_date: '2026-09-29',
+      exit_date: '2026-10-05',
+      holding_days: 4,
+      symbol: 'ALOKINDS',
+      shares: 3774,
+      entry_price: 17.55,
+      exit_price: 17.44,
+      net_pnl: -713.38,
+      net_return_pct: -0.64,
+      outcome: 'LOSS',
+      exit_reason: 'TIME_STOP_5D',
+    },
+    {
+      trade_id: 4,
+      entry_date: '2026-09-30',
+      exit_date: '2026-10-06',
+      holding_days: 4,
+      symbol: 'INDOTHAI',
+      shares: 912,
+      entry_price: 36.33,
+      exit_price: 40.71,
+      net_pnl: 3911.09,
+      net_return_pct: 12.05,
+      outcome: 'WIN',
+      exit_reason: 'TARGET_1_PARTIAL',
+    },
+    {
+      trade_id: 5,
+      entry_date: '2026-10-06',
+      exit_date: '2026-10-07',
+      holding_days: 1,
+      symbol: 'GPTINFRA',
+      shares: 625,
+      entry_price: 118.91,
+      exit_price: 113.5,
+      net_pnl: -3534.33,
+      net_return_pct: -4.55,
+      outcome: 'LOSS',
+      exit_reason: 'STOP_LOSS',
+    },
+    {
+      trade_id: 6,
+      entry_date: '2026-09-30',
+      exit_date: '2026-10-07',
+      holding_days: 5,
+      symbol: 'INDOTHAI',
+      shares: 912,
+      entry_price: 36.33,
+      exit_price: 40.53,
+      net_pnl: 3748.55,
+      net_return_pct: 11.55,
+      outcome: 'WIN',
+      exit_reason: 'TIME_STOP_5D',
+    },
+    {
+      trade_id: 7,
+      entry_date: '2026-09-30',
+      exit_date: '2026-10-07',
+      holding_days: 5,
+      symbol: 'VINDHYATEL',
+      shares: 54,
+      entry_price: 1226.41,
+      exit_price: 1219.99,
+      net_pnl: -491.77,
+      net_return_pct: -0.52,
+      outcome: 'LOSS',
+      exit_reason: 'TIME_STOP_5D',
+    },
+    {
+      trade_id: 8,
+      entry_date: '2026-09-30',
+      exit_date: '2026-10-07',
+      holding_days: 5,
+      symbol: 'SUPERHOUSE',
+      shares: 451,
+      entry_price: 146.76,
+      exit_price: 154.01,
+      net_pnl: 3117.7,
+      net_return_pct: 4.94,
+      outcome: 'WIN',
+      exit_reason: 'TIME_STOP_5D',
+    },
+  ]);
+
+  // Real-time WebSocket connection to SequenceAlpha Python engine (utility/paper_trade/dashboard_server.py)
+  const { isConnected: wsConnected, sendCommand } = useWebSocketStream({
+    url: 'ws://localhost:8765/ws',
+    onStateUpdate: (msg) => {
+      if (msg.type === 'INITIAL_STATE' || msg.type === 'TICK_UPDATE') {
+        const payload = msg.payload || {};
+        const pState = payload.portfolio_state || payload.account_a;
+        if (pState) {
+          if (typeof pState.cash === 'number') setCashBuffer(pState.cash);
+          if (pState.quarantine) setQuarantineList(pState.quarantine);
+          if (Array.isArray(pState.slots)) {
+            setSlots(
+              pState.slots.map((s: any) => {
+                const sym = s.symbol
+                  ? s.symbol.startsWith('NSE:')
+                    ? s.symbol
+                    : `NSE:${s.symbol}-EQ`
+                  : null;
+                const entryPx = Number(s.entry_price || 0);
+                const ltpPx = Number(s.peak_price || s.entry_price || 0);
+                const pnlPct =
+                  entryPx > 0 ? Number((((ltpPx - entryPx) / entryPx) * 100).toFixed(2)) : 0;
+                return {
+                  slot_id: Number(s.slot_id),
+                  symbol: sym,
+                  entry_date: s.entry_date || null,
+                  entry_price: entryPx,
+                  ltp: ltpPx,
+                  current_shares: Number(s.current_shares || 0),
+                  original_shares: Number(s.original_shares || 0),
+                  peak_price: Number(s.peak_price || 0),
+                  peak_gain: Number(s.peak_gain || 0),
+                  target_hit: Boolean(s.target_hit),
+                  stop_price: Number(s.stop_price || 0),
+                  holding_bar: Number(s.holding_bar || 0),
+                  expiry_bar: 5,
+                  volatility_20d: Number(s.volatility_20d || 0),
+                  pnl_pct: pnlPct,
+                };
+              })
+            );
+          }
+        }
+        if (Array.isArray(payload.daily_summary) && payload.daily_summary.length > 0) {
+          const mappedSummary: DailySummaryMetric[] = payload.daily_summary.map((r: any, i: number, arr: any[]) => {
+            const pv = Number(r.portfolio_value || 0);
+            const prevPv = i > 0 ? Number(arr[i - 1].portfolio_value || 1000000) : 1000000;
+            return {
+              date: String(r.date || ''),
+              portfolio_value: pv,
+              cash_balance: Number(r.cash ?? r.cash_balance ?? 0),
+              invested_value: Number(r.invested_value || 0),
+              pnl_day: Number(r.pnl_day ?? pv - prevPv),
+              cum_return_pct: Number(r.cum_return_pct || 0),
+              active_slots: Number(r.active_slots || 0),
+              win_rate_pct: Number(r.win_rate_pct || 0),
+              total_trades: Number(r.closed_trades ?? r.total_trades ?? 0),
+            };
+          });
+          setDailySummary(mappedSummary);
+          const latest = mappedSummary[mappedSummary.length - 1];
+          if (latest) {
+            setTotalAum(latest.portfolio_value);
+            setInvestedValue(latest.invested_value);
+            setCashBuffer(latest.cash_balance);
+          }
+        }
+        if (Array.isArray(payload.closed_trades) && payload.closed_trades.length > 0) {
+          setClosedTrades(
+            payload.closed_trades.map((t: any, idx: number) => {
+              const netPnl = Number(t.net_pnl || 0);
+              return {
+                trade_id: t.trade_id ?? idx + 1,
+                entry_date: String(t.entry_date || ''),
+                exit_date: String(t.exit_date || ''),
+                holding_days: Number(t.holding_days || 5),
+                symbol: String(t.symbol || ''),
+                shares: Number(t.shares || 0),
+                entry_price: Number(t.entry_price || 0),
+                exit_price: Number(t.exit_price || 0),
+                net_pnl: netPnl,
+                net_return_pct: Number(t.net_return_pct ?? t.return_pct ?? 0),
+                outcome: netPnl >= 0 ? 'WIN' : 'LOSS',
+                exit_reason: String(t.exit_reason || ''),
+              };
+            })
+          );
+        }
+        if (Array.isArray(payload.recent_orders) && payload.recent_orders.length > 0) {
+          setOrders(
+            payload.recent_orders
+              .slice()
+              .reverse()
+              .map((o: any, idx: number) => ({
+                order_id: `ORD-${String(payload.recent_orders.length - idx).padStart(4, '0')}`,
+                timestamp: String(o.timestamp || ''),
+                symbol: String(o.symbol || '').startsWith('NSE:')
+                  ? String(o.symbol)
+                  : `NSE:${o.symbol}-EQ`,
+                side: (o.side === 'SELL' ? 'SELL' : 'BUY') as 'BUY' | 'SELL',
+                action: String(o.action || 'COHORT_ENTRY'),
+                order_type: 'MKT',
+                quantity: Number(o.shares || 0),
+                fill_price: Number(o.fill_price || 0),
+                turnover: Number(o.turnover || 0),
+                commission: Number(o.commission || 0),
+                slippage_bps: 5.0,
+                strategy_tag: 'COHORT_ENTRY',
+                status: 'FILLED',
+              }))
+          );
+        }
+      }
+    },
+  });
+
+  // Ticker stream items (synced with active single-account holdings)
+  const [tickerItems] = useState<TickerItem[]>([
+    { symbol: 'NIFTY 50', price: 25124.5, change_pct: 0.34, up: true },
+    { symbol: 'NSE:ALMONDZ-EQ', price: 20.51, change_pct: 4.38, up: true },
+    { symbol: 'NSE:PFOCUS-EQ', price: 165.45, change_pct: 1.58, up: true },
+    { symbol: 'NSE:IVC-EQ', price: 54.03, change_pct: 0.46, up: true },
+    { symbol: 'NSE:RESPONIND-EQ', price: 158.95, change_pct: -0.49, up: false },
+    { symbol: 'NSE:SHREDIGCEM-EQ', price: 89.62, change_pct: -0.49, up: false },
+    { symbol: 'NSE:GFLLIMITED-EQ', price: 75.08, change_pct: -0.64, up: false },
+    { symbol: 'NSE:TVSELECT-EQ', price: 394.68, change_pct: -2.32, up: false },
+    { symbol: 'NSE:GLOBALVECT-EQ', price: 223.09, change_pct: -2.59, up: false },
+    { symbol: 'NSE:GENCON-EQ', price: 105.0, change_pct: -3.81, up: false },
+  ]);
+
+  // TFT Model Candidates (Fold 14 Champion Skew >= 1.25 & p50 > 0)
   const [candidates] = useState<TftQuantileInference[]>([
     {
-      symbol: 'NSE:INDOTHAI-EQ',
-      p10_bearish: -0.015,
-      p50_median_alpha: 0.048,
-      p90_bullish_breakout: 0.092,
-      conviction_score: 0.89,
-      directional_loss: 0.071,
-      decile_rank: 10,
-    },
-    {
       symbol: 'NSE:RESPONIND-EQ',
-      p10_bearish: -0.011,
-      p50_median_alpha: 0.039,
-      p90_bullish_breakout: 0.078,
-      conviction_score: 0.84,
-      directional_loss: 0.082,
+      p10_bearish: -0.028,
+      p50_median_alpha: 0.036,
+      p90_bullish_breakout: 0.089,
+      upside_skew: 3.18,
+      conviction_score: 0.31,
+      directional_loss: 0.041,
       decile_rank: 10,
     },
     {
-      symbol: 'NSE:MANALIPETC-EQ',
-      p10_bearish: -0.009,
+      symbol: 'NSE:SHREDIGCEM-EQ',
+      p10_bearish: -0.024,
+      p50_median_alpha: 0.031,
+      p90_bullish_breakout: 0.076,
+      upside_skew: 3.17,
+      conviction_score: 0.31,
+      directional_loss: 0.044,
+      decile_rank: 10,
+    },
+    {
+      symbol: 'NSE:ALMONDZ-EQ',
+      p10_bearish: -0.031,
+      p50_median_alpha: 0.042,
+      p90_bullish_breakout: 0.095,
+      upside_skew: 3.06,
+      conviction_score: 0.33,
+      directional_loss: 0.039,
+      decile_rank: 10,
+    },
+    {
+      symbol: 'NSE:PFOCUS-EQ',
+      p10_bearish: -0.029,
       p50_median_alpha: 0.034,
-      p90_bullish_breakout: 0.065,
-      conviction_score: 0.81,
-      directional_loss: 0.089,
+      p90_bullish_breakout: 0.082,
+      upside_skew: 2.83,
+      conviction_score: 0.31,
+      directional_loss: 0.045,
       decile_rank: 10,
     },
   ]);
@@ -366,23 +685,22 @@ export const App: React.FC = () => {
 
   const slotPriceData = Array.from({ length: 25 }, (_, i) => {
     const base = activeSlot.entry_price || 100;
-    const factor = 1 + (Math.sin(i / 3) * 0.04 + i * 0.003);
+    const factor = 1 + (Math.sin(i / 3) * 0.02 + i * ((activeSlot.pnl_pct || 0) / 2400));
     const p = Number((base * factor).toFixed(2));
     return {
-      time: `15:${(i * 2).toString().padStart(2, '0')}`,
+      time: `14:${(25 + i).toString().padStart(2, '0')}`,
       price: i === 24 ? activeSlot.ltp || p : p,
       stop: activeSlot.stop_price,
       target: Number((activeSlot.entry_price * 1.06).toFixed(2)),
     };
   });
 
-  const equityData = [
-    { date: '10-04', account_a: 1000000, account_b: 1000000, benchmark: 1000000 },
-    { date: '10-05', account_a: 999405, account_b: 1000000, benchmark: 1000500 },
-    { date: '10-06', account_a: 1007052, account_b: 1007168, benchmark: 1001200 },
-    { date: '10-07', account_a: 1004213, account_b: 1003937, benchmark: 1001800 },
-    { date: '10-08', account_a: 1004213, account_b: 1003632, benchmark: 1002200 },
-  ];
+  const equityData = dailySummary.map((d) => ({
+    date: d.date.slice(5),
+    portfolio_value: d.portfolio_value,
+    invested_value: d.invested_value,
+    benchmark: 1000000,
+  }));
 
   const tftFanData = Array.from({ length: 15 }, (_, i) => ({
     step: `+${i + 1}d`,
@@ -400,8 +718,8 @@ export const App: React.FC = () => {
     setSlots((prev) =>
       prev.map((s) => {
         if (s.slot_id === slotId && s.symbol) {
-          const newStop = Number((s.stop_price * 1.015).toFixed(2));
-          return { ...s, stop_price: newStop };
+          const newStop = Number((s.entry_price * 1.01).toFixed(2));
+          return { ...s, stop_price: Math.max(s.stop_price, newStop) };
         }
         return s;
       })
@@ -414,22 +732,31 @@ export const App: React.FC = () => {
       prev.map((s) => {
         if (s.slot_id === selectedSlotId && s.symbol && !s.target_hit) {
           const newShares = Math.floor(s.current_shares / 2);
+          const turnover = Number((newShares * s.ltp).toFixed(2));
+          const commission = Number((turnover * 0.0022).toFixed(2));
           const newOrder: FyersOrder = {
-            order_id: `FY-${Math.floor(10000 + Math.random() * 90000)}`,
+            order_id: `ORD-${Math.floor(1000 + Math.random() * 9000)}`,
             timestamp: new Date().toLocaleTimeString('en-IN', { hour12: false }),
-            account: 'ACCT_A',
             symbol: s.symbol,
             side: 'SELL',
-            order_type: 'MKT',
+            action: 'TARGET_1_PARTIAL',
+            order_type: 'LMT',
             quantity: newShares,
             fill_price: s.ltp,
-            slippage_bps: 1.5,
+            turnover,
+            commission,
+            slippage_bps: 0.0,
             strategy_tag: 'TARGET_1_EXIT',
             status: 'FILLED',
           };
           setOrders((o) => [newOrder, ...o]);
           sendCommand('HARVEST_50', { slot_id: selectedSlotId, shares: newShares });
-          return { ...s, target_hit: true, current_shares: newShares };
+          return {
+            ...s,
+            target_hit: true,
+            current_shares: s.current_shares - newShares,
+            stop_price: Math.max(s.stop_price, Number((s.entry_price * 1.01).toFixed(2))),
+          };
         }
         return s;
       })
@@ -440,16 +767,20 @@ export const App: React.FC = () => {
     setSlots((prev) =>
       prev.map((s) => {
         if (s.slot_id === slotId && s.symbol) {
+          const turnover = Number((s.current_shares * s.ltp).toFixed(2));
+          const commission = Number((turnover * 0.0022).toFixed(2));
           const newOrder: FyersOrder = {
-            order_id: `FY-${Math.floor(10000 + Math.random() * 90000)}`,
+            order_id: `ORD-${Math.floor(1000 + Math.random() * 9000)}`,
             timestamp: new Date().toLocaleTimeString('en-IN', { hour12: false }),
-            account: 'ACCT_A',
             symbol: s.symbol,
             side: 'SELL',
+            action: 'MANUAL_CLOSE',
             order_type: 'MKT',
             quantity: s.current_shares,
             fill_price: s.ltp,
-            slippage_bps: 3.5,
+            turnover,
+            commission,
+            slippage_bps: 5.0,
             strategy_tag: 'MANUAL',
             status: 'FILLED',
           };
@@ -473,19 +804,24 @@ export const App: React.FC = () => {
   };
 
   const handleSimulateFill = () => {
-    const syms = ['NSE:INDOTHAI-EQ', 'NSE:RESPONIND-EQ', 'NSE:VINDHYATEL-EQ', 'NSE:DCW-EQ'];
+    const syms = ['NSE:RESPONIND-EQ', 'NSE:SHREDIGCEM-EQ', 'NSE:PFOCUS-EQ', 'NSE:ALMONDZ-EQ'];
     const sym = syms[Math.floor(Math.random() * syms.length)];
     const fillPrice = Number((40 + Math.random() * 120).toFixed(2));
+    const qty = 200;
+    const turnover = Number((qty * fillPrice).toFixed(2));
+    const commission = Number((turnover * 0.0022).toFixed(2));
     const newOrder: FyersOrder = {
-      order_id: `FY-${Math.floor(10000 + Math.random() * 90000)}`,
+      order_id: `ORD-${Math.floor(1000 + Math.random() * 9000)}`,
       timestamp: new Date().toLocaleTimeString('en-IN', { hour12: false }),
-      account: Math.random() > 0.5 ? 'ACCT_A' : 'ACCT_B',
       symbol: sym,
       side: Math.random() > 0.5 ? 'BUY' : 'SELL',
+      action: 'COHORT_ENTRY',
       order_type: 'MKT',
-      quantity: 100,
+      quantity: qty,
       fill_price: fillPrice,
-      slippage_bps: 2.8,
+      turnover,
+      commission,
+      slippage_bps: 5.0,
       strategy_tag: 'COHORT_ENTRY',
       status: 'FILLED',
     };
@@ -496,7 +832,7 @@ export const App: React.FC = () => {
     const upper = cmd.trim().toUpperCase();
     if (upper === 'HELP') {
       alert(
-        'COMMANDS:\n- BUY [SYM] [QTY]\n- RATCHET [SLOT]\n- CLOSE [SLOT]\n- EQUITY / SLOTS / DUAL / TFT / BLOTTER\n- HALT'
+        'COMMANDS:\n- BUY [SYM] [QTY]\n- RATCHET [SLOT]\n- CLOSE [SLOT]\n- EQUITY / SLOTS / LEDGER / TFT / BLOTTER\n- HALT'
       );
     } else if (upper.startsWith('BUY')) {
       const parts = upper.split(' ');
@@ -514,7 +850,7 @@ export const App: React.FC = () => {
                   ltp: 150.0,
                   current_shares: qty,
                   original_shares: qty,
-                  stop_price: 142.5,
+                  stop_price: 143.25,
                   pnl_pct: 0.0,
                 }
               : s
@@ -526,18 +862,25 @@ export const App: React.FC = () => {
       handleRatchetStop();
     } else if (upper === 'EQUITY') {
       setActiveTab('equity');
+    } else if (upper === 'LEDGER' || upper === 'DUAL') {
+      setActiveTab('dual');
     } else if (upper === 'HALT') {
       sendCommand('HALT');
       alert('CIRCUIT BREAKER: Execution halted.');
     }
   };
 
+  const latestSummary = dailySummary[dailySummary.length - 1];
+  const cumReturnPct = latestSummary ? latestSummary.cum_return_pct : -0.61;
+  const winRatePct = latestSummary ? latestSummary.win_rate_pct : 33.33;
+  const totalClosedTrades = latestSummary ? latestSummary.total_trades : closedTrades.length;
+
   return (
     <div className="flex flex-col min-h-screen bg-[#030508] text-[#e6edf3] font-mono select-none">
       {/* 1. Header */}
       <BloombergHeader
         wsConnected={wsConnected}
-        regime="BULLISH / VOL-LOW"
+        regime="CHAMPION 14:50 EOD"
         engineArmed={true}
         audioEnabled={audioEnabled}
         onToggleAudio={() => setAudioEnabled(!audioEnabled)}
@@ -555,15 +898,13 @@ export const App: React.FC = () => {
       {/* 3. Financial KPI Strip */}
       <KpiSummaryStrip
         totalAum={totalAum}
-        aumPct={0.42}
-        maxDrawdown={15.75}
-        sharpeRatio={1.53}
-        accountAValue={accountAValue}
-        accountBValue={accountBValue}
-        activeSlotsCount={slots.filter((s) => s.symbol).length}
+        aumPct={cumReturnPct}
+        investedValue={investedValue}
         cashBuffer={cashBuffer}
-        decileSpread={3.8}
-        directionalLoss={0.0821}
+        activeSlotsCount={slots.filter((s) => s.symbol).length}
+        winRatePct={winRatePct}
+        totalTrades={totalClosedTrades}
+        quarantineCount={Object.keys(quarantineList).length}
       />
 
       {/* 4. Function Hotkeys Navigation */}
@@ -597,7 +938,7 @@ export const App: React.FC = () => {
                 : 'bg-[#161d27] text-[#00ff66] border-[#263140] hover:text-white'
             }`}
           >
-            &lt;F3&gt; PORTFOLIO EQUITY CURVE
+            &lt;F3&gt; OOS EQUITY CURVE
           </button>
           <button
             onClick={() => setActiveTab('dual')}
@@ -607,7 +948,7 @@ export const App: React.FC = () => {
                 : 'bg-[#161d27] text-gray-300 border-[#263140] hover:text-white'
             }`}
           >
-            &lt;F4&gt; DUAL ACCT ARB (A vs B)
+            &lt;F4&gt; 14:50 EOD LEDGER &amp; TRADES
           </button>
           <button
             onClick={() => setActiveTab('tft')}
@@ -641,7 +982,7 @@ export const App: React.FC = () => {
               <RechartsFinancialChart
                 mode={chartMode}
                 onSetMode={setChartMode}
-                symbol={activeSlot.symbol || 'NSE:INDOTHAI-EQ'}
+                symbol={activeSlot.symbol || 'NSE:RESPONIND-EQ'}
                 slotPriceData={slotPriceData}
                 equityData={equityData}
                 tftFanData={tftFanData}
@@ -654,6 +995,7 @@ export const App: React.FC = () => {
                 entryPrice={activeSlot.entry_price}
                 ltp={activeSlot.ltp}
                 pnlPct={activeSlot.pnl_pct}
+                holdingBar={activeSlot.holding_bar}
                 onRatchetStop={() => handleRatchetStop(selectedSlotId)}
                 onHarvestFifty={handleHarvestFifty}
                 onEmergencyClose={() => handleEmergencyClose(selectedSlotId)}
@@ -676,12 +1018,12 @@ export const App: React.FC = () => {
               <OrderBlotter orders={orders} onSimulateFill={handleSimulateFill} />
             </div>
 
-            {/* Dual Account Comparator (5 cols) */}
+            {/* Single-Account EOD Ledger & Closed Trades (5 cols) */}
             <div className="col-span-12 lg:col-span-5">
               <DualAccountComparator
-                metricsHistory={metricsHistory}
-                accountAValue={accountAValue}
-                accountBValue={accountBValue}
+                dailySummary={dailySummary}
+                trades={closedTrades}
+                quarantine={quarantineList}
               />
             </div>
           </div>
@@ -709,9 +1051,9 @@ export const App: React.FC = () => {
         {activeTab === 'dual' && (
           <div className="p-2">
             <DualAccountComparator
-              metricsHistory={metricsHistory}
-              accountAValue={accountAValue}
-              accountBValue={accountBValue}
+              dailySummary={dailySummary}
+              trades={closedTrades}
+              quarantine={quarantineList}
             />
           </div>
         )}
