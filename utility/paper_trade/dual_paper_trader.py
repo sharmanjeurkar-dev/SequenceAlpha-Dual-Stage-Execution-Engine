@@ -8,11 +8,14 @@ Executes the Afternoon EOD Continuous Entry (14:50 IST) strategy with:
 """
 
 import os
+import sys
 import json
 import pandas as pd
 import numpy as np
 from datetime import datetime, date
 from typing import Dict, List, Tuple, Optional
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from utility.paper_trade.state_manager import PortfolioStateManager
 
@@ -304,3 +307,91 @@ class PaperTradingEngine:
 
 # Backward-compatible alias
 DualPaperTradingEngine = PaperTradingEngine
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+    from Data.historical_data.historical_data_scraper import HISTORICAL_DATA_PATH, _safe_filename
+    from utility.backtest.generate_backtest_signals import OUTPUT_CACHE_PATH
+
+    parser = argparse.ArgumentParser(description="Replay Single-Account 14:50 EOD Champion Paper Trading")
+    parser.add_argument("--days", type=int, default=6, help="Number of recent OOS trading days to simulate")
+    parser.add_argument("--reset", action="store_true", help="Reset state and CSV logs before replaying")
+    args = parser.parse_args()
+
+    if args.reset:
+        for f in ["portfolio_state.json", "paper_orders_log.csv", "paper_trades_log.csv", "paper_trading_daily_summary.csv"]:
+            if os.path.exists(f):
+                os.remove(f)
+
+    if not os.path.exists(OUTPUT_CACHE_PATH):
+        raise FileNotFoundError(f"OOS predictions cache not found at {OUTPUT_CACHE_PATH}. Run `python utility/backtest/engine.py` first.")
+
+    preds_df = pd.read_parquet(OUTPUT_CACHE_PATH)
+    preds_df["date_str"] = pd.to_datetime(preds_df["date"]).dt.strftime("%Y-%m-%d")
+    sim_dates = sorted(preds_df["date_str"].unique())[-args.days :]
+
+    print(f"Simulating {len(sim_dates)} trading days ({sim_dates[0]} -> {sim_dates[-1]}) on 14:50 EOD Champion Account...")
+    engine = PaperTradingEngine()
+
+    # Cache OHLCV DataFrames for symbols in sim_dates
+    symbols = preds_df[preds_df["date_str"].isin(sim_dates)]["symbol"].unique()
+    price_cache = {}
+    for sym in symbols:
+        fp = os.path.join(HISTORICAL_DATA_PATH, _safe_filename(sym))
+        if os.path.isfile(fp):
+            df_p = pd.read_parquet(fp)
+            df_p.index = pd.to_datetime(df_p.index).tz_localize(None)
+            df_p["vol_20d"] = df_p["Close"].pct_change().rolling(20).std().fillna(0.025)
+            price_cache[sym] = df_p
+
+    for d_str in sim_dates:
+        dt_obj = pd.Timestamp(d_str)
+        # 1. Intraday tick simulation (Low for stops, High for Target 1, Close for EOD)
+        low_prices, high_prices, close_prices, vols = {}, {}, {}, {}
+        for sym, df_p in price_cache.items():
+            if dt_obj in df_p.index:
+                row = df_p.loc[dt_obj]
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[-1]
+                low_prices[sym] = float(row["Low"])
+                high_prices[sym] = float(row["High"])
+                close_prices[sym] = float(row["Close"])
+                vols[sym] = float(row["vol_20d"])
+
+        engine.process_intraday_market_ticks(low_prices, sim_date=d_str)
+        engine.process_intraday_market_ticks(high_prices, sim_date=d_str)
+
+        # 2. Build 14:50 EOD candidates ranked by Quantile Sharpe
+        day_preds = preds_df[preds_df["date_str"] == d_str]
+        candidates = []
+        upside_skews = {}
+        for _, r in day_preds.iterrows():
+            sym = r["symbol"]
+            if sym not in close_prices:
+                continue
+            p10 = float(r["p10"])
+            p50 = float(r["p50_returns_predicted"])
+            p90 = float(r["p90"])
+            skew = p90 / max(abs(p10), 1e-4)
+            upside_skews[sym] = skew
+            candidates.append((sym, p50, skew))
+
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        engine.execute_afternoon_rebalance(
+            candidates=candidates,
+            current_prices=close_prices,
+            volatilities=vols,
+            upside_skews=upside_skews,
+            sim_date=d_str,
+        )
+        summary = engine.audit_daily_summary(close_prices, sim_date=d_str)
+        print(
+            f"  [{d_str}] Equity: ₹{summary['portfolio_value']:,.2f} | "
+            f"Day PnL: ₹{summary['pnl_day']:+,.2f} ({summary['cum_return_pct']:+.2f}%) | "
+            f"Slots: {summary['active_slots']}/15 | Win Rate: {summary['win_rate_pct']:.1f}%"
+        )
+

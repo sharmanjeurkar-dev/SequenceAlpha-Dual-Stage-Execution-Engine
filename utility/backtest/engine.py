@@ -115,7 +115,7 @@ def build_nifty_regime_map(benchmark_path="Data/historical_data/data/NSE_NIFTY50
     """
     Computes daily Nifty 50 macro regime map:
     True = Bull / Normal regime
-    False = Bear / High-Volatility Correction regime (Nifty < 50D SMA and annualized 20D vol > 14%)
+    False = Bear / Correction regime (Nifty < 200D SMA OR (Nifty < 50D SMA and annualized 20D vol > 15%))
     """
     if not os.path.exists(benchmark_path):
         return {}
@@ -126,11 +126,12 @@ def build_nifty_regime_map(benchmark_path="Data/historical_data/data/NSE_NIFTY50
             bench_df.index = bench_df.index.tz_localize(None)
         bench_df = bench_df.sort_index()
 
+        sma_200 = bench_df["Close"].rolling(200, min_periods=40).mean()
         sma_50 = bench_df["Close"].rolling(50, min_periods=20).mean()
         daily_ret = bench_df["Close"].pct_change()
         ann_vol_20 = daily_ret.rolling(20, min_periods=10).std() * np.sqrt(252)
 
-        is_bull = ~((bench_df["Close"] < sma_50) & (ann_vol_20 > 0.14))
+        is_bull = ~((bench_df["Close"] < sma_200) | ((bench_df["Close"] < sma_50) & (ann_vol_20 > 0.15)))
         return {dt.date(): bool(val) for dt, val in is_bull.items()}
     except Exception:
         return {}
@@ -146,13 +147,18 @@ def run_backtest(
     max_symbols=None,
     force_regenerate=False,
     require_positive_score=True,
-    min_upside_skew=1.25,
-    enable_regime_gate=False,
-    use_vol_adaptive_stop=False,
+    min_upside_skew=None,
+    enable_regime_gate=True,
+    use_vol_adaptive_stop=True,
+    enforce_strict_horizon=True,
+    enable_realistic_gap_fill=True,
+    predictions_path=None,
 ):
     """
     Executes the full event-driven Backtrader simulation using Rolling Cohorts (Strategy C).
     """
+    target_cache_path = predictions_path or os.getenv("OOS_PREDICTIONS_CACHE", OUTPUT_CACHE_PATH)
+
     print("=" * 65)
     print("SEQUENCE ALPHA: ROLLING COHORTS PORTFOLIO SIMULATION")
     print("=" * 65)
@@ -163,15 +169,36 @@ def run_backtest(
     )
     print(f"Execution Slippage: {slippage_perc * 10000:.1f} bps")
     print(f"Cost Model:         NSE Delivery (STT 0.1%, Brokerage, GST, Stamp)")
+    print(f"Horizon Discipline: Strict Day-5 Liquidation ({enforce_strict_horizon})")
+    print(f"Gap Execution:      Realistic Gap Fill Modeling ({enable_realistic_gap_fill})")
+    print(f"Stop Protection:    Clamped Vol-Adaptive Stops ({use_vol_adaptive_stop})")
+    print(f"Macro Regime Gate:  Nifty 200D Trend & Vol ({enable_regime_gate})")
+    print(f"Predictions Cache:  {target_cache_path}")
     print("=" * 65)
 
     # 1. Load out-of-sample prediction table (with auto-invalidation on newer checkpoints)
-    if force_regenerate or is_predictions_cache_stale(OUTPUT_CACHE_PATH):
+    should_regenerate = force_regenerate or (
+        predictions_path is None and is_predictions_cache_stale(target_cache_path)
+    )
+    if should_regenerate:
         print("Regenerating out-of-sample predictions cache from latest models...")
-        oos_df = generate_oos_predictions()
+        oos_df = generate_oos_predictions(output_cache_path=target_cache_path)
     else:
-        print(f"Loading predictions from cache: {OUTPUT_CACHE_PATH}")
-        oos_df = pd.read_parquet(OUTPUT_CACHE_PATH)
+        print(f"Loading predictions from cache: {target_cache_path}")
+        oos_df = pd.read_parquet(target_cache_path)
+
+    # Auto-calibrate min_upside_skew if evaluating rank-normalized targets [-1, 1]
+    if min_upside_skew is None:
+        if "p90" in oos_df.columns and oos_df["p90"].mean() > 0.5:
+            print("Auto-calibrating for rank-normalized target: setting min_upside_skew = 0.0")
+            effective_min_upside_skew = 0.0
+        else:
+            effective_min_upside_skew = 1.25
+    elif min_upside_skew == 1.25 and "p90" in oos_df.columns and oos_df["p90"].mean() > 0.5:
+        print("Note: Detected rank-normalized quantile targets. Calibrating min_upside_skew from 1.25 to 0.0.")
+        effective_min_upside_skew = 0.0
+    else:
+        effective_min_upside_skew = min_upside_skew
 
     # Filter symbols if max_symbols specified
     if max_symbols is not None:
@@ -199,10 +226,12 @@ def run_backtest(
         daily_cohort_size=cohort_size,
         cash_buffer=0.05,
         require_positive_score=require_positive_score,
-        min_upside_skew=min_upside_skew,
+        min_upside_skew=effective_min_upside_skew,
         enable_regime_gate=enable_regime_gate,
         regime_map=regime_map,
         use_vol_adaptive_stop=use_vol_adaptive_stop,
+        enforce_strict_horizon=enforce_strict_horizon,
+        enable_realistic_gap_fill=enable_realistic_gap_fill,
         verbose=verbose,
     )
 
@@ -430,4 +459,39 @@ def plot_equity_curve(strat, initial_cash):
 
 
 if __name__ == "__main__":
-    run_backtest()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="SequenceAlpha Backtrader Simulation Engine")
+    parser.add_argument(
+        "--predictions",
+        type=str,
+        default=os.getenv("OOS_PREDICTIONS_CACHE", None),
+        help="Path to predictions parquet cache (default: Data/cache/tft_oos_predictions.parquet)",
+    )
+    parser.add_argument("--cash", type=float, default=1_000_000.0, help="Initial cash (₹)")
+    parser.add_argument("--cohort-size", type=int, default=3, help="Daily cohort size (default: 3)")
+    parser.add_argument("--total-positions", type=int, default=15, help="Total active positions (default: 15)")
+    parser.add_argument("--holding-bars", type=int, default=5, help="Holding bars (default: 5)")
+    parser.add_argument("--max-symbols", type=int, default=None, help="Filter to top N most frequent symbols")
+    parser.add_argument("--min-upside-skew", type=float, default=None, help="Minimum upside skew ratio (defaults to 0.0 for rank targets, 1.25 for return targets)")
+    parser.add_argument("--force-regenerate", action="store_true", help="Force regenerate predictions cache")
+    parser.add_argument("--no-regime-gate", action="store_true", help="Disable macro regime gating")
+    parser.add_argument("--no-vol-stop", action="store_true", help="Disable volatility-adaptive stops")
+    parser.add_argument("--no-strict-horizon", action="store_true", help="Disable strict Day-5 horizon liquidation")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose trade execution logging")
+    args = parser.parse_args()
+
+    run_backtest(
+        initial_cash=args.cash,
+        cohort_size=args.cohort_size,
+        total_positions=args.total_positions,
+        holding_bars=args.holding_bars,
+        max_symbols=args.max_symbols,
+        min_upside_skew=args.min_upside_skew,
+        force_regenerate=args.force_regenerate,
+        enable_regime_gate=not args.no_regime_gate,
+        use_vol_adaptive_stop=not args.no_vol_stop,
+        enforce_strict_horizon=not args.no_strict_horizon,
+        verbose=args.verbose,
+        predictions_path=args.predictions,
+    )

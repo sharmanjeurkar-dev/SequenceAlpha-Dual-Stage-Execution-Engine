@@ -113,9 +113,11 @@ class PortfolioStateManager:
             if sym is None or sym not in current_prices:
                 continue
 
-            price = current_prices[sym]
+            price = float(current_prices[sym])
+            s["ltp"] = round(price, 2)
             if s["entry_price"] is None:
                 continue
+            s["pnl_pct"] = round(((price - float(s["entry_price"])) / float(s["entry_price"])) * 100.0, 2)
 
             # Update peak price and gain
             if s["peak_price"] is None:
@@ -197,6 +199,13 @@ class PortfolioStateManager:
                     self.state["cash_balance"] = self.state.get("cash_balance", 0.0) + (s["current_shares"] * price)
                     self._clear_slot(s)
 
+        # Update live mark-to-market portfolio_value on every tick pass
+        invested_val = sum(
+            s["current_shares"] * float(s.get("ltp") or s.get("entry_price") or 0.0)
+            for s in self.state["slots"]
+            if s.get("symbol") is not None
+        )
+        self.state["portfolio_value"] = round(self.state.get("cash_balance", 0.0) + invested_val, 2)
         self.save_state()
         return actions
 
@@ -346,6 +355,7 @@ class PortfolioStateManager:
                     s["symbol"] = sym
                     s["entry_date"] = datetime.now().date().isoformat()
                     s["entry_price"] = price
+                    s["ltp"] = price
                     s["current_shares"] = shares
                     s["original_shares"] = shares
                     s["peak_price"] = price
@@ -365,6 +375,7 @@ class PortfolioStateManager:
         slot["symbol"] = None
         slot["entry_date"] = None
         slot["entry_price"] = None
+        slot["ltp"] = None
         slot["current_shares"] = 0
         slot["original_shares"] = 0
         slot["peak_price"] = None
@@ -374,3 +385,5 @@ class PortfolioStateManager:
         slot["holding_bar"] = 0
         slot["expiry_bar"] = 0
         slot["volatility_20d"] = 0.025
+        slot["pnl_pct"] = 0.0
+        slot["day_change_pct"] = 0.0

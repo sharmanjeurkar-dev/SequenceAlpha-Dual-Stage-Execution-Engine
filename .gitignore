@@ -32,3 +32,17 @@ portfolio_state.json
 
 # System & Cache
 .DS_Store
+
+# Kaggle local staging & outputs
+kaggle/
+kaggle/build/
+kaggle/outputs/
+kaggle/config.env
+kaggle/kaggle.json
+!kaggle/config.env.example
+!kaggle/notebooks/*.ipynb
+
+automation/
+models/
+*.log
+test/

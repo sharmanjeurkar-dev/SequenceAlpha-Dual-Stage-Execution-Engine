@@ -12,26 +12,37 @@ export function useWebSocketStream({
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [lastMessage, setLastMessage] = useState<any>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const callbackRef = useRef<WebSocketHookProps['onStateUpdate']>(onStateUpdate);
+
+  useEffect(() => {
+    callbackRef.current = onStateUpdate;
+  }, [onStateUpdate]);
 
   useEffect(() => {
     let timeoutId: any;
+    let unmounted = false;
 
     const connect = () => {
+      if (unmounted) return;
       try {
         const ws = new WebSocket(url);
         wsRef.current = ws;
 
         ws.onopen = () => {
-          setIsConnected(true);
-          console.log('[SequenceAlpha WS] Connected to live engine stream');
+          if (!unmounted) {
+            setIsConnected(true);
+            console.log('[SequenceAlpha WS] Connected to live engine stream');
+          }
         };
 
         ws.onmessage = (event) => {
           try {
             const data = jsonParseSafe(event.data);
-            setLastMessage(data);
-            if (onStateUpdate && data) {
-              onStateUpdate(data);
+            if (!unmounted && data) {
+              setLastMessage(data);
+              if (callbackRef.current) {
+                callbackRef.current(data);
+              }
             }
           } catch (e) {
             console.error('[SequenceAlpha WS] Parse error', e);
@@ -39,30 +50,36 @@ export function useWebSocketStream({
         };
 
         ws.onclose = () => {
-          setIsConnected(false);
-          // Try reconnect in 3s
-          timeoutId = setTimeout(connect, 3000);
+          if (!unmounted) {
+            setIsConnected(false);
+            timeoutId = setTimeout(connect, 3000);
+          }
         };
 
         ws.onerror = () => {
-          setIsConnected(false);
+          if (!unmounted) {
+            setIsConnected(false);
+          }
           ws.close();
         };
       } catch (err) {
-        setIsConnected(false);
-        timeoutId = setTimeout(connect, 3000);
+        if (!unmounted) {
+          setIsConnected(false);
+          timeoutId = setTimeout(connect, 3000);
+        }
       }
     };
 
     connect();
 
     return () => {
+      unmounted = true;
       clearTimeout(timeoutId);
       if (wsRef.current) {
         wsRef.current.close();
       }
     };
-  }, [url, onStateUpdate]);
+  }, [url]);
 
   const sendCommand = useCallback((command: string, payload: any = {}) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {

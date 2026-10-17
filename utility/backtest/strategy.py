@@ -56,6 +56,7 @@ class TFTTopNStrategy(bt.Strategy):
         self.all_orders = []
         self._open_positions = {}  # symbol -> list of open lot dicts
         self._pending_exit_reason = {}  # data -> str exit reason
+        self._pending_exit_price = {}  # data -> float realistic execution fill price
         self._pending_close = set()  # data feeds with active pending close orders
 
     def notify_order(self, order):
@@ -67,6 +68,19 @@ class TFTTopNStrategy(bt.Strategy):
             price = order.executed.price
             size = order.executed.size
             sym = order.data._name
+
+            # Realistic gap execution adjustment:
+            if order.issell():
+                realistic_price = self._pending_exit_price.pop(order.data, None)
+                if (
+                    getattr(self.p, "enable_realistic_gap_fill", True)
+                    and realistic_price is not None
+                    and abs(realistic_price - price) > 1e-4
+                ):
+                    cash_diff = (realistic_price - price) * abs(size)
+                    self.broker.cash += cash_diff
+                    self.broker._value += cash_diff
+                    price = realistic_price
 
             # 1. Record every completed order execution
             self.all_orders.append({
@@ -143,6 +157,7 @@ class TFTTopNStrategy(bt.Strategy):
                 )
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
             self._pending_exit_reason.pop(order.data, None)
+            self._pending_exit_price.pop(order.data, None)
             self._pending_close.discard(order.data)
             if order.isbuy() and hasattr(self, "slots"):
                 for s in self.slots:
@@ -225,32 +240,34 @@ class TFTRollingCohortsStrategy(TFTTopNStrategy):
         ("daily_cohort_size", 3),
         ("cash_buffer", 0.05),
         ("min_score", -999.0),
-        ("require_positive_score", True),  # Conviction Gate: require p50 > 0.0 (calibrated directional boundary)
-        ("min_upside_skew", 1.25),         # Upside/Downside skew filter: p90 / |p10| >= 1.25 (46.79% CAGR / 1.70 Sharpe)
-        ("enable_regime_gate", False),     # Macro Regime Gate: throttle exposure when Nifty 50 < 200D SMA
+        ("require_positive_score", True),  # Conviction Gate: require p50 > 0.0 (above market median rank)
+        ("min_upside_skew", 1.25),         # Upside/Downside skew filter: p90 / |p10| >= 1.25
+        ("enable_regime_gate", True),      # Macro Regime Gate: throttle exposure when Nifty 50 < 200D SMA
         ("regime_map", None),              # Dict[date, bool]: True = Bull/Normal regime, False = Bear regime
         ("bear_cohort_size", 1),           # Max daily entries during Bear regime (down from 3)
-        ("bear_cash_buffer", 0.25),        # Cash buffer during Bear regime (up from 5% to 25%)
+        ("bear_cash_buffer", 0.30),        # Elevated cash buffer during Bear regime (30%)
         ("use_dynamic_sizing", True),      # Pillar 1: Dynamic inverse-volatility sizing
-        ("use_sharpe_ranking", False),     # Raw high-conviction p50 sorting captures top momentum leaders (31.91% CAGR)
+        ("use_sharpe_ranking", False),     # Raw high-conviction p50 sorting captures top momentum leaders
         ("enable_kill_switch", True),      # Hybrid: Mid-week emergency cut
-        ("kill_switch_threshold", 0.045),  # 4.5% flat loss stop (32.79% CAGR / 1.53 Sharpe / 15.75% MaxDD)
-        ("use_vol_adaptive_stop", False),  # Optional Clamped Volatility-Adaptive Stop Loss: clip(1.8 * vol_20d, 4.0%, 5.5%)
+        ("kill_switch_threshold", 0.045),  # 4.5% flat loss stop floor
+        ("use_vol_adaptive_stop", True),   # Clamped Volatility-Adaptive Stop Loss: clip(1.8 * vol_20d, 4.0%, 6.5%)
         ("vol_stop_min", 0.040),           # 4.0% minimum stop floor for steady stocks
-        ("vol_stop_max", 0.055),           # 5.5% maximum stop cap for high-beta stocks
-        ("vol_stop_mult", 1.8),            # 1.8x daily volatility multiplier for momentum stocks
+        ("vol_stop_max", 0.065),           # 6.5% maximum stop cap for volatile stocks
+        ("vol_stop_mult", 1.8),            # 1.8x daily volatility multiplier
         ("enable_partial_profit", True),   # 50% profit booking at Target 1
         ("target_profit_threshold", 0.06), # Target 1 = +6.0% peak gain
         ("partial_exit_ratio", 0.50),      # Book 50% shares
         ("enable_break_even_stop", True),  # Ratchet stop to Break-Even upon Target 1
         ("break_even_buffer", 0.010),      # +1.0% net Break-Even price floor
-        ("enable_rem_trailing", True),     # Setup C: Dynamic Trailing on Rem 50% (26.23% Max DD & +1.1% in 2025)
+        ("enable_rem_trailing", True),     # Setup C: Dynamic Trailing on Rem 50%
         ("rem_trail_cushion", 0.05),       # 5.0% cushion if trailing enabled
         ("trailing_vol_mult", 1.8),        # Volatility multiplier
-        ("enable_capital_recycling", True), # Efficiently redeploy freed target cash into incoming cohorts (uncapped)
+        ("enable_capital_recycling", True), # Efficiently redeploy freed target cash into incoming cohorts
         ("refill_cut_slots_next_day", True),  # Next day add 3 + cut yesterday!
         ("quarantine_bars", 5),            # Quarantine cut stocks from next predictions
-        ("never_renew_losers", True),      # Option C: Enforce liquidation at Day 5 for losing cohorts
+        ("never_renew_losers", True),      # Enforce liquidation at Day 5 for losing cohorts
+        ("enforce_strict_horizon", True),  # Enforce strict 5-day lifecycle (fixes horizon mismatch & eliminates passive runners)
+        ("enable_realistic_gap_fill", True), # Model realistic gap-down slippage on stop-loss execution
         ("verbose", False),
     )
 
@@ -344,6 +361,7 @@ class TFTRollingCohortsStrategy(TFTTopNStrategy):
                             s["stop_price"] = s["entry_price"] * (1.0 - stop_dist)
                             s["target_hit"] = False
 
+                        curr_open = d.open[0]
                         curr_high = d.high[0]
                         curr_low = d.low[0]
                         curr_close = d.close[0]
@@ -356,9 +374,23 @@ class TFTRollingCohortsStrategy(TFTTopNStrategy):
 
                         # Stage 1: Before Target 1 is hit
                         if not s["target_hit"]:
+                            is_stop_hit = self.p.enable_kill_switch and curr_low <= s["stop_price"]
+                            is_target_hit = self.p.enable_partial_profit and peak_gain >= self.p.target_profit_threshold
+
+                            # Intra-bar collision resolution & gap handling (A.1)
+                            if is_stop_hit and is_target_hit:
+                                # When both barriers are touched, resolve by open price & session direction
+                                if curr_open <= s["stop_price"] or curr_close < curr_open:
+                                    is_target_hit = False
+                                else:
+                                    is_stop_hit = False
+
                             # A. Initial Stop Loss (Volatility-Adaptive or Fixed)
-                            if self.p.enable_kill_switch and curr_low <= s["stop_price"]:
-                                self._pending_exit_reason[d] = "Mid-Week Cut (-4.5%)"
+                            if is_stop_hit:
+                                is_gap_down = curr_open <= s["stop_price"]
+                                exit_reason = "Gap-Down Cut" if is_gap_down else "Mid-Week Stop Loss Cut"
+                                self._pending_exit_reason[d] = exit_reason
+                                self._pending_exit_price[d] = curr_open if is_gap_down else s["stop_price"]
                                 order = self.close(data=d)
                                 if order is not None:
                                     self._pending_close.add(d)
@@ -367,13 +399,15 @@ class TFTRollingCohortsStrategy(TFTTopNStrategy):
                                 if self.p.refill_cut_slots_next_day:
                                     s["expiry_bar"] = self.bar_count + 1
                                 if self.p.verbose:
-                                    print(f"[{dt}] MID-WEEK CUT: {d._name} loss={unrealized_ret*100:.2f}%. Slot refilling next bar.")
+                                    print(f"[{dt}] {exit_reason}: {d._name} loss={unrealized_ret*100:.2f}%. Slot refilling next bar.")
 
                             # B. Target 1 Reached (+6.0% Peak Gain) -> Book 50% Profit, Ratchet Stop to Break-Even Floor!
-                            elif self.p.enable_partial_profit and peak_gain >= self.p.target_profit_threshold:
+                            elif is_target_hit:
+                                target_px = s["entry_price"] * (1.0 + self.p.target_profit_threshold)
                                 half_shares = int(pos.size * self.p.partial_exit_ratio)
                                 if half_shares > 0:
                                     self._pending_exit_reason[d] = "Target 1 (50% Profit Booked)"
+                                    self._pending_exit_price[d] = curr_open if curr_open >= target_px else target_px
                                     order = self.sell(data=d, size=half_shares)
                                     if order is not None:
                                         self._pending_close.add(d)
@@ -400,8 +434,14 @@ class TFTRollingCohortsStrategy(TFTTopNStrategy):
                                 s["stop_price"] = max(s["stop_price"], be_floor)
 
                             if curr_low <= s["stop_price"]:
-                                exit_reason = "Remaining 50% Stop Hit (BE/Locked Profit)"
+                                is_gap_down = curr_open <= s["stop_price"]
+                                exit_reason = (
+                                    "Remaining 50% Gap-Down Stop"
+                                    if is_gap_down
+                                    else "Remaining 50% Stop Hit (BE/Locked Profit)"
+                                )
                                 self._pending_exit_reason[d] = exit_reason
+                                self._pending_exit_price[d] = curr_open if is_gap_down else s["stop_price"]
                                 order = self.close(data=d)
                                 if order is not None:
                                     self._pending_close.add(d)
@@ -539,18 +579,20 @@ class TFTRollingCohortsStrategy(TFTTopNStrategy):
         expected_sales_proceeds = 0.0
         for s in expiring_slots:
             old_d = s["stock"]
-            if old_d is not None and old_d not in chosen_set:
+            if old_d is not None:
                 pos = self.getposition(old_d)
-                if old_d not in self._pending_close and pos.size > 0:
+                should_liquidate = self.p.enforce_strict_horizon or (old_d not in chosen_set)
+                if should_liquidate and old_d not in self._pending_close and pos.size > 0:
                     exit_reason = (
-                        "Day-5 Loser Cut" if old_d in losing_expiring else "Day-5 Expiry"
+                        "Day-5 Loser Cut" if old_d in losing_expiring else "Day-5 Horizon Complete"
                     )
                     self._pending_exit_reason[old_d] = exit_reason
                     order = self.close(data=old_d)
                     if order is not None:
                         self._pending_close.add(old_d)
                         expected_sales_proceeds += pos.size * old_d.close[0]
-                s["stock"] = None
+                if should_liquidate:
+                    s["stock"] = None
 
         if not chosen_today:
             for s in expiring_slots:

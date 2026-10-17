@@ -20,8 +20,21 @@ export const TickerTape: React.FC<TickerTapeProps> = ({ items, onSelectSymbol })
               onClick={() => onSelectSymbol(t.symbol)}
               className="inline-flex items-center gap-1.5 cursor-pointer hover:underline"
             >
-              <span className="text-white font-bold">{t.symbol}</span>
-              <span className="text-gray-300">₹{t.price.toFixed(2)}</span>
+              {t.is_index && (
+                <span className="text-[9px] bg-[#131d2e] text-[#38bdf8] border border-[#1e3a5f] px-1 rounded font-bold">
+                  IDX
+                </span>
+              )}
+              <span className={t.is_index ? 'text-[#f8fafc] font-extrabold' : 'text-white font-bold'}>
+                {t.symbol.replace('NSE:', '').replace('-EQ', '')}
+              </span>
+              <span className="text-gray-300">
+                {t.is_index ? '' : '₹'}
+                {t.price.toLocaleString('en-IN', {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })}
+              </span>
               <span className={`font-bold ${t.up ? 'text-[#00ff66]' : 'text-[#ff3344]'}`}>
                 {t.change_pct >= 0 ? '+' : ''}
                 {t.change_pct.toFixed(2)}%

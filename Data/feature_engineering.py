@@ -9,7 +9,11 @@ from Data.historical_data.historical_data_scraper import (
     HISTORICAL_DATA_PATH,
     _safe_filename,
 )
-from Data.label import add_forward_returns, apply_triple_barrier_labels
+from Data.label import (
+    add_cross_sectional_rank_target,
+    add_forward_returns,
+    apply_triple_barrier_labels,
+)
 from Data.liquidity_screener.snapshot_store import load_snapshot
 
 benchmark_filename = _safe_filename(BENCHMARK_SYMBOL)
@@ -219,9 +223,53 @@ def add_relative_strength(
     return df
 
 
+def add_macro_regime_features(
+    df: pd.DataFrame, benchmark_df: pd.DataFrame, date_col: str = "Datetime"
+) -> pd.DataFrame:
+    """
+    Appends broad market macro regime indicators (Nifty 50 200D trend, annualized 20D vol,
+    and universe market breadth) to each row. Enables temporal neural networks to differentiate
+    bull trends from consolidation and high-volatility drawdown regimes.
+    """
+    b_df = benchmark_df.copy()
+    b_df.index = pd.to_datetime(b_df.index).tz_localize(None)
+    b_df = b_df.sort_index()
+
+    b_sma_200 = b_df["Close"].rolling(200, min_periods=60).mean()
+    b_df["Macro_Nifty_Trend_200D"] = (
+        (b_df["Close"] - b_sma_200) / (b_sma_200 + 1e-8)
+    ).astype(np.float32)
+
+    b_ret = b_df["Close"].pct_change()
+    b_df["Macro_Nifty_Vol_20D"] = (
+        b_ret.rolling(20, min_periods=10).std() * np.sqrt(252)
+    ).astype(np.float32)
+
+    trend_map = b_df["Macro_Nifty_Trend_200D"].to_dict()
+    vol_map = b_df["Macro_Nifty_Vol_20D"].to_dict()
+
+    dt_series = pd.to_datetime(df[date_col])
+    df["Macro_Nifty_Trend_200D"] = (
+        dt_series.map(trend_map).fillna(0.0).astype(np.float32)
+    )
+    df["Macro_Nifty_Vol_20D"] = (
+        dt_series.map(vol_map).fillna(0.15).astype(np.float32)
+    )
+
+    # Market Breadth: fraction of universe stocks trading above their 50D SMA on date t
+    if "Sma-50" in df.columns and "Close" in df.columns:
+        above_50 = (df["Close"] > df["Sma-50"]).astype(float)
+        breadth = above_50.groupby(df[date_col]).transform("mean")
+        df["Market_Breadth_SMA50"] = breadth.fillna(0.5).astype(np.float32)
+    else:
+        df["Market_Breadth_SMA50"] = np.float32(0.5)
+
+    return df
+
+
 def build_training_set(
     snapshot_date: str,
-    target_type: str = "forward_return",
+    target_type: str = "cross_sectional_rank",
     forward_horizon: int = 5,
     standardize_features: bool = True,
     labeling_kwargs: dict | None = None,
@@ -235,7 +283,6 @@ def build_training_set(
     failure_reason = []
 
     for symbol in symbols:
-        # Name changing accrding to file name format
         file_name = _safe_filename(symbol)
         file = os.path.join(HISTORICAL_DATA_PATH, file_name)
 
@@ -255,7 +302,7 @@ def build_training_set(
             df = feature_enginiering(df, symbol)
             df = add_relative_strength(df, benchmark_df, window=WINDOW)
             df = add_rolling_beta(df, benchmark_df, window=60)
-            if target_type == "forward_return":
+            if target_type in ("cross_sectional_rank", "forward_rank", "rank", "forward_return"):
                 df = add_forward_returns(df, horizon=forward_horizon, col_name="Target")
             else:
                 tb_kwargs = labeling_kwargs or {}
@@ -275,6 +322,22 @@ def build_training_set(
     if "Datetime" not in final_df.columns:
         final_df["Datetime"] = final_df.index
     final_df.index.name = None
+
+    # Macro regime conditioning (A.2)
+    final_df = add_macro_regime_features(final_df, benchmark_df, date_col="Datetime")
+
+    # Cross-sectional rank target normalization (New Target [-1.0, +1.0])
+    if target_type in ("cross_sectional_rank", "forward_rank", "rank"):
+        final_df["Raw_Forward_Return"] = final_df["Target"].copy()
+        final_df = add_cross_sectional_rank_target(
+            final_df,
+            date_col="Datetime",
+            raw_return_col="Raw_Forward_Return",
+            out_col="Target",
+            scale_range=(-1.0, 1.0),
+        )
+    elif "Target" in final_df.columns:
+        final_df["Raw_Forward_Return"] = final_df["Target"].copy()
 
     final_df = add_cross_sectional_vol_rank(final_df)
     final_df = add_market_calendar_time_idx(final_df, date_col="Datetime")
@@ -318,8 +381,14 @@ def walk_forward_out_of_sample_dataframe_slices(
     endDate=None,
     jump: int = 3,
     max_days: int = 10,
-    encoder_buffer_trading_days: int = 32,
+    min_train_months: int = 15,
+    encoder_buffer_trading_days: int = 20,
 ) -> list[list[pd.DataFrame]]:
+    """
+    Slices an expanding-window walk-forward dataset for out-of-sample temporal model evaluation.
+    Enforces a minimum initial training window (default 15 months for 5-year cycle, 15 folds) so 
+    rolling indicators are fully formed, with strict embargo separation and prepended encoder buffer history.
+    """
     if startDate is None:
         startDate = df.index.min()
     if endDate is None:
@@ -330,10 +399,11 @@ def walk_forward_out_of_sample_dataframe_slices(
     total_months = (endDate.year - startDate.year) * 12 + (
         endDate.month - startDate.month
     )
+    effective_min_train_months = min(min_train_months, max(jump, total_months - jump))
 
     dfcollection = []
-    for i in range(0, total_months, jump):
-        nextSetEndDate = startDate + pd.DateOffset(months=jump + i)
+    for i in range(0, max(1, total_months - effective_min_train_months), jump):
+        nextSetEndDate = startDate + pd.DateOffset(months=effective_min_train_months + i)
         nextSetEndDateWithoutEmbargo = nextSetEndDate - pd.DateOffset(days=max_days)
         testNextSetEndDate = nextSetEndDate + pd.DateOffset(months=jump)
 

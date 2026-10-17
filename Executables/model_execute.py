@@ -1,6 +1,10 @@
 import os
-import pickle
+import sys
 from datetime import datetime, timedelta
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+import pickle
 
 import lightning.pytorch as pl
 import matplotlib.pyplot as plt
@@ -33,6 +37,12 @@ EMBARGO_HOURS = 2
 RESOLUTION = "1D"
 DAYS = 365
 TOTAL_CHUNKS = 5
+LOOKBACK_YEARS = 5
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+CHECKPOINT_DIR = os.getenv(
+    "MODEL_CHECKPOINT_DIR", os.path.join(BASE_DIR, "models", "saved")
+)
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 END_DATE = TODAY = datetime.now()
 
 features = [
@@ -54,6 +64,9 @@ features = [
     "Close-High-distance-20D",
     "Volatility-Contraction",
     "Volume-High-distance-20D",
+    "Macro_Nifty_Trend_200D",
+    "Macro_Nifty_Vol_20D",
+    "Market_Breadth_SMA50",
 ]
 
 
@@ -346,8 +359,16 @@ def plot_model_output(model, validation_dataloader):
     plt.show()
 
 
-def run_walk_forward_pipeline():
-    # Scan the univrse, screen the right symbols, download the historical data for timedelta greater than one day
+def run_walk_forward_pipeline(
+    start_fold: int = 0,
+    end_fold: int | None = None,
+    jump: int = 3,
+    min_train_months: int = 15,
+    lookback_years: int = 5,
+    checkpoint_dir: str = CHECKPOINT_DIR,
+):
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    # Scan the universe, screen the right symbols, download the historical data for timedelta greater than one day
     all_items = os.listdir(HISTORICAL_DATA_PATH)
     if all_items:
         first_item_path = os.path.join(HISTORICAL_DATA_PATH, all_items[0])
@@ -378,6 +399,11 @@ def run_walk_forward_pipeline():
                 )
 
     df, _ = build_training_set(snapshot_date=datetime.strftime(TODAY, "%Y-%m-%d"))
+    if lookback_years is not None:
+        start_date = TODAY - pd.DateOffset(years=lookback_years)
+        df = df[df["Datetime"] >= start_date].copy()
+        print(f"Filtered dataset to {lookback_years}-year training cycle ({start_date.date()} to {TODAY.date()}): {len(df):,} rows")
+
     float64_cols = df.select_dtypes(include=["float64"]).columns
     df[float64_cols] = df[float64_cols].astype(np.float32)
     df[features] = df[features].astype(np.float32)
@@ -385,13 +411,20 @@ def run_walk_forward_pipeline():
     df = df.sort_values(by=["symbol", "Datetime"])
     print(f"\t \t Clean dataset rows: {len(df)} \t \t")
 
-    # WalkForward Slicing for training and Out of sample Validation
-    df_acc_folds = walk_forward_out_of_sample_dataframe_slices(df=df)
+    # WalkForward Slicing for training and Out of sample Validation (5-year cycle: 15 folds)
+    df_acc_folds = walk_forward_out_of_sample_dataframe_slices(
+        df=df,
+        jump=jump,
+        min_train_months=min_train_months,
+    )
+    print(f"Generated {len(df_acc_folds)} walk-forward folds across 5-year dataset.")
     results = []
     backtest_metrics = []
     spread_metrics = []
 
     for i, (train_df, test_df) in enumerate(df_acc_folds):
+        if i < start_fold or (end_fold is not None and i >= end_fold):
+            continue
         eval_start_date = getattr(test_df, "attrs", {}).get("eval_start_date", None)
         train_df = train_df.sort_values(by=["symbol", "timeidx"]).reset_index(drop=True)
         test_df = test_df.sort_values(by=["symbol", "timeidx"]).reset_index(drop=True)
@@ -441,9 +474,7 @@ def run_walk_forward_pipeline():
             pd.concat(spread_metrics, ignore_index=True).to_csv(
                 "Decile_Spread_Result.csv", index=False
             )
-        trainer.save_checkpoint(
-            f"/Users/sharmanjeurkar/Projects/SequenceAlpha/models/saved/model_fold_{i}"
-        )
+        trainer.save_checkpoint(os.path.join(checkpoint_dir, f"model_fold_{i}"))
         print("\n\n\n")
         print("*" * 50)
         print(f"Fold:{metrics['fold']}|Mean ic:{metrics['daily_cs_ic']}")
@@ -469,9 +500,7 @@ def run_walk_forward_pipeline():
     )
     print("\n\n")
     print("-" * 50)
-    trainer.save_checkpoint(
-        "/Users/sharmanjeurkar/Projects/SequenceAlpha/models/saved/tft_model.ckpt"
-    )
+    trainer.save_checkpoint(os.path.join(checkpoint_dir, "tft_model.ckpt"))
 
     plot_model_output(model=model, validation_dataloader=validation_dataloader)
     pickle.dump(training, open("training_dataset.pkl", "wb"))
@@ -479,4 +508,37 @@ def run_walk_forward_pipeline():
 
 
 if __name__ == "__main__":
-    run_walk_forward_pipeline()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="SequenceAlpha TFT Walk-Forward Training Pipeline")
+    parser.add_argument("--start-fold", type=int, default=0, help="Start fold index (default: 0)")
+    parser.add_argument("--end-fold", type=int, default=None, help="End fold index (exclusive)")
+    parser.add_argument("--jump", type=int, default=3, help="Jump between folds in months (default: 3)")
+    parser.add_argument(
+        "--min-train-months",
+        type=int,
+        default=15,
+        help="Min initial train months for 5-year cycle (default: 15, produces 15 folds)",
+    )
+    parser.add_argument(
+        "--lookback-years",
+        type=int,
+        default=5,
+        help="Historical lookback window in years (default: 5)",
+    )
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        default=CHECKPOINT_DIR,
+        help=f"Directory to save fold models (default: {CHECKPOINT_DIR})",
+    )
+    args = parser.parse_args()
+
+    run_walk_forward_pipeline(
+        start_fold=args.start_fold,
+        end_fold=args.end_fold,
+        jump=args.jump,
+        min_train_months=args.min_train_months,
+        lookback_years=args.lookback_years,
+        checkpoint_dir=args.checkpoint_dir,
+    )

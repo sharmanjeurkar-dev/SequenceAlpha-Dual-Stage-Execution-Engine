@@ -32,14 +32,34 @@ OUTPUT_CACHE_PATH = os.path.abspath(
 )
 
 
-def generate_oos_predictions(checkpoint_dir="models/saved"):
+def generate_oos_predictions(
+    checkpoint_dir=None,
+    output_cache_path=None,
+    jump=3,
+    max_days=10,
+    min_train_months=15,
+    lookback_years=5,
+):
+    if checkpoint_dir is None:
+        checkpoint_dir = os.getenv("MODEL_CHECKPOINT_DIR", "models/saved")
+    if output_cache_path is None:
+        output_cache_path = os.getenv("OOS_PREDICTIONS_CACHE", OUTPUT_CACHE_PATH)
+
     today = datetime.now()
+    print(f"Using Model Checkpoints from: {checkpoint_dir}")
+    print(f"Output Predictions Path:      {output_cache_path}")
     print("Step 1: Building multi-year dataset with H=5 forward target...")
     df, _ = build_training_set(
         snapshot_date=today.strftime("%Y-%m-%d"),
+        target_type="cross_sectional_rank",
         forward_horizon=5,
         standardize_features=True,
     )
+
+    if lookback_years is not None:
+        start_date = today - pd.DateOffset(years=lookback_years)
+        df = df[df["Datetime"] >= start_date].copy()
+        print(f"Filtered dataset to {lookback_years}-year training cycle ({start_date.date()} to {today.date()}): {len(df):,} rows")
 
     float64_cols = df.select_dtypes(include=["float64"]).columns
     df[float64_cols] = df[float64_cols].astype(np.float32)
@@ -49,7 +69,12 @@ def generate_oos_predictions(checkpoint_dir="models/saved"):
     print(f"Clean rows: {len(df):,}, Symbols: {df['symbol'].nunique()}, Dates: {df['Datetime'].nunique()}")
 
     print("Step 2: Slicing walk-forward out-of-sample folds...")
-    df_acc_folds = walk_forward_out_of_sample_dataframe_slices(df=df, jump=3, max_days=10)
+    df_acc_folds = walk_forward_out_of_sample_dataframe_slices(
+        df=df,
+        jump=jump,
+        max_days=max_days,
+        min_train_months=min_train_months,
+    )
     print(f"Generated {len(df_acc_folds)} walk-forward folds.")
 
     all_fold_predictions = []
@@ -116,13 +141,51 @@ def generate_oos_predictions(checkpoint_dir="models/saved"):
     full_oos_df = full_oos_df.sort_values(by=["date", "symbol", "fold_id"])
     full_oos_df = full_oos_df.drop_duplicates(subset=["date", "symbol"], keep="last")
 
-    os.makedirs(os.path.dirname(OUTPUT_CACHE_PATH), exist_ok=True)
-    full_oos_df.to_parquet(OUTPUT_CACHE_PATH, index=False)
-    print(f"\n✓ Successfully saved {len(full_oos_df):,} out-of-sample predictions to {OUTPUT_CACHE_PATH}")
+    os.makedirs(os.path.dirname(output_cache_path), exist_ok=True)
+    full_oos_df.to_parquet(output_cache_path, index=False)
+    print(f"\n✓ Successfully saved {len(full_oos_df):,} out-of-sample predictions to {output_cache_path}")
     print(f"Date range: {full_oos_df['date'].min()} to {full_oos_df['date'].max()}")
     print(f"Unique symbols covered: {full_oos_df['symbol'].nunique()}")
     return full_oos_df
 
 
 if __name__ == "__main__":
-    generate_oos_predictions()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Generate TFT Out-of-Sample Predictions Cache")
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        default=os.getenv("MODEL_CHECKPOINT_DIR", "models/saved"),
+        help="Directory containing model checkpoints (default: models/saved or $MODEL_CHECKPOINT_DIR)",
+    )
+    parser.add_argument(
+        "--output-path",
+        type=str,
+        default=os.getenv("OOS_PREDICTIONS_CACHE", OUTPUT_CACHE_PATH),
+        help="Path to save out-of-sample predictions parquet cache",
+    )
+    parser.add_argument("--jump", type=int, default=3, help="Jump between walk-forward folds (default: 3)")
+    parser.add_argument("--max-days", type=int, default=10, help="Max test days per fold (default: 10)")
+    parser.add_argument(
+        "--min-train-months",
+        type=int,
+        default=15,
+        help="Minimum initial training window in months (default: 15, produces 15 folds)",
+    )
+    parser.add_argument(
+        "--lookback-years",
+        type=int,
+        default=5,
+        help="Historical lookback window in years (default: 5)",
+    )
+    args = parser.parse_args()
+
+    generate_oos_predictions(
+        checkpoint_dir=args.checkpoint_dir,
+        output_cache_path=args.output_path,
+        jump=args.jump,
+        max_days=args.max_days,
+        min_train_months=args.min_train_months,
+        lookback_years=args.lookback_years,
+    )

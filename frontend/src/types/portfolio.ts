@@ -73,7 +73,9 @@ export interface TftQuantileInference {
 
 export interface TickerItem {
   symbol: string;
+  fyers_symbol?: string;
   price: number;
   change_pct: number;
   up: boolean;
+  is_index?: boolean;
 }

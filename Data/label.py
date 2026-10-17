@@ -18,6 +18,51 @@ def add_forward_returns(
     return out
 
 
+def add_cross_sectional_rank_target(
+    df: pd.DataFrame,
+    date_col: str = "Datetime",
+    raw_return_col: str = "Target",
+    out_col: str = "Target",
+    scale_range: tuple = (-1.0, 1.0),
+) -> pd.DataFrame:
+    """
+    Normalizes forward returns into daily cross-sectional percentile ranks:
+    Target in [-1.0, +1.0] where +1.0 = top performer of the universe on that day,
+    -1.0 = worst performer, and 0.0 = median.
+
+    Formula for stock i on date t across N_t valid stocks:
+        pct_rank = (rank - 1.0) / (N_t - 1.0)      # in [0.0, 1.0]
+        target = low + pct_rank * (high - low)     # in [-1.0, +1.0]
+
+    Protects neural networks and rank strategies from:
+    1. Extreme idiosyncratic outlier distortions (e.g. +450% meme runs).
+    2. Non-stationarity across bull and bear market regimes.
+    3. Overfitting to broad market beta drift.
+    """
+    out = df.copy()
+    if raw_return_col not in out.columns:
+        raise KeyError(f"Column '{raw_return_col}' not found in dataframe")
+
+    low, high = scale_range
+    scale_span = high - low
+
+    def _rank_group(series: pd.Series) -> pd.Series:
+        valid_mask = series.notna()
+        n = valid_mask.sum()
+        if n <= 1:
+            return pd.Series(0.0, index=series.index)
+        ranks = series.rank(method="average", ascending=True)
+        pct = (ranks - 1.0) / (n - 1.0)
+        return low + pct * scale_span
+
+    out[out_col] = (
+        out.groupby(date_col)[raw_return_col]
+        .transform(_rank_group)
+        .astype(np.float32)
+    )
+    return out
+
+
 def apply_triple_barrier_labels(
     df: pd.DataFrame,
     vol_col="Daily_Vol",
