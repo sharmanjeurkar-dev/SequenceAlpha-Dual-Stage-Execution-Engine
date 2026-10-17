@@ -92,6 +92,51 @@ def load_candidate_feeds(oos_predictions_df):
     return data_feeds
 
 
+def is_predictions_cache_stale(cache_path=OUTPUT_CACHE_PATH, checkpoint_dir="models/saved") -> bool:
+    """
+    Returns True if the predictions parquet cache is missing OR older than any saved model checkpoint.
+    Prevents accidentally backtesting stale signals after a model retraining session.
+    """
+    if not os.path.exists(cache_path):
+        return True
+    if not os.path.isdir(checkpoint_dir):
+        return False
+
+    cache_mtime = os.path.getmtime(cache_path)
+    for fname in os.listdir(checkpoint_dir):
+        if fname.startswith("model_fold_") or fname.endswith(".ckpt"):
+            ckpt_path = os.path.join(checkpoint_dir, fname)
+            if os.path.isfile(ckpt_path) and os.path.getmtime(ckpt_path) > cache_mtime:
+                return True
+    return False
+
+
+def build_nifty_regime_map(benchmark_path="Data/historical_data/data/NSE_NIFTY50-INDEX.parquet") -> dict:
+    """
+    Computes daily Nifty 50 macro regime map:
+    True = Bull / Normal regime
+    False = Bear / Correction regime (Nifty < 200D SMA OR (Nifty < 50D SMA and annualized 20D vol > 15%))
+    """
+    if not os.path.exists(benchmark_path):
+        return {}
+    try:
+        bench_df = pd.read_parquet(benchmark_path)
+        bench_df.index = pd.to_datetime(bench_df.index)
+        if bench_df.index.tz is not None:
+            bench_df.index = bench_df.index.tz_localize(None)
+        bench_df = bench_df.sort_index()
+
+        sma_200 = bench_df["Close"].rolling(200, min_periods=40).mean()
+        sma_50 = bench_df["Close"].rolling(50, min_periods=20).mean()
+        daily_ret = bench_df["Close"].pct_change()
+        ann_vol_20 = daily_ret.rolling(20, min_periods=10).std() * np.sqrt(252)
+
+        is_bull = ~((bench_df["Close"] < sma_200) | ((bench_df["Close"] < sma_50) & (ann_vol_20 > 0.15)))
+        return {dt.date(): bool(val) for dt, val in is_bull.items()}
+    except Exception:
+        return {}
+
+
 def run_backtest(
     initial_cash=1_000_000.0,
     cohort_size=3,
@@ -100,10 +145,20 @@ def run_backtest(
     slippage_perc=0.0005,  # 5 bps slippage
     verbose=False,
     max_symbols=None,
+    force_regenerate=False,
+    require_positive_score=True,
+    min_upside_skew=None,
+    enable_regime_gate=True,
+    use_vol_adaptive_stop=True,
+    enforce_strict_horizon=True,
+    enable_realistic_gap_fill=True,
+    predictions_path=None,
 ):
     """
     Executes the full event-driven Backtrader simulation using Rolling Cohorts (Strategy C).
     """
+    target_cache_path = predictions_path or os.getenv("OOS_PREDICTIONS_CACHE", OUTPUT_CACHE_PATH)
+
     print("=" * 65)
     print("SEQUENCE ALPHA: ROLLING COHORTS PORTFOLIO SIMULATION")
     print("=" * 65)
@@ -114,31 +169,54 @@ def run_backtest(
     )
     print(f"Execution Slippage: {slippage_perc * 10000:.1f} bps")
     print(f"Cost Model:         NSE Delivery (STT 0.1%, Brokerage, GST, Stamp)")
+    print(f"Horizon Discipline: Strict Day-5 Liquidation ({enforce_strict_horizon})")
+    print(f"Gap Execution:      Realistic Gap Fill Modeling ({enable_realistic_gap_fill})")
+    print(f"Stop Protection:    Clamped Vol-Adaptive Stops ({use_vol_adaptive_stop})")
+    print(f"Macro Regime Gate:  Nifty 200D Trend & Vol ({enable_regime_gate})")
+    print(f"Predictions Cache:  {target_cache_path}")
     print("=" * 65)
 
-    # 1. Load out-of-sample prediction table
-    if not os.path.exists(OUTPUT_CACHE_PATH):
-        print("Out-of-sample predictions cache not found. Generating now...")
-        oos_df = generate_oos_predictions()
+    # 1. Load out-of-sample prediction table (with auto-invalidation on newer checkpoints)
+    should_regenerate = force_regenerate or (
+        predictions_path is None and is_predictions_cache_stale(target_cache_path)
+    )
+    if should_regenerate:
+        print("Regenerating out-of-sample predictions cache from latest models...")
+        oos_df = generate_oos_predictions(output_cache_path=target_cache_path)
     else:
-        print(f"Loading predictions from cache: {OUTPUT_CACHE_PATH}")
-        oos_df = pd.read_parquet(OUTPUT_CACHE_PATH)
+        print(f"Loading predictions from cache: {target_cache_path}")
+        oos_df = pd.read_parquet(target_cache_path)
+
+    # Auto-calibrate min_upside_skew if evaluating rank-normalized targets [-1, 1]
+    if min_upside_skew is None:
+        if "p90" in oos_df.columns and oos_df["p90"].mean() > 0.5:
+            print("Auto-calibrating for rank-normalized target: setting min_upside_skew = 0.0")
+            effective_min_upside_skew = 0.0
+        else:
+            effective_min_upside_skew = 1.25
+    elif min_upside_skew == 1.25 and "p90" in oos_df.columns and oos_df["p90"].mean() > 0.5:
+        print("Note: Detected rank-normalized quantile targets. Calibrating min_upside_skew from 1.25 to 0.0.")
+        effective_min_upside_skew = 0.0
+    else:
+        effective_min_upside_skew = min_upside_skew
 
     # Filter symbols if max_symbols specified
     if max_symbols is not None:
         top_syms = oos_df["symbol"].value_counts().head(max_symbols).index
         oos_df = oos_df[oos_df["symbol"].isin(top_syms)]
 
-    # 2. Build data feeds
+    # 2. Build data feeds & macro regime map
     feeds = load_candidate_feeds(oos_df)
     if not feeds:
         raise RuntimeError("No valid data feeds could be created!")
+    regime_map = build_nifty_regime_map()
 
     # 3. Initialize Cerebro
     cerebro = bt.Cerebro()
     cerebro.broker.setcash(initial_cash)
     cerebro.broker.addcommissioninfo(NSEEquityCommissionScheme())
     cerebro.broker.set_slippage_perc(slippage_perc)
+    cerebro.broker.set_coc(True)  # Cheat-On-Close: instant settlement of sales into available cash
 
     # Add Strategy: Rolling Overlapping Cohorts
     cerebro.addstrategy(
@@ -147,6 +225,13 @@ def run_backtest(
         holding_bars=holding_bars,
         daily_cohort_size=cohort_size,
         cash_buffer=0.05,
+        require_positive_score=require_positive_score,
+        min_upside_skew=effective_min_upside_skew,
+        enable_regime_gate=enable_regime_gate,
+        regime_map=regime_map,
+        use_vol_adaptive_stop=use_vol_adaptive_stop,
+        enforce_strict_horizon=enforce_strict_horizon,
+        enable_realistic_gap_fill=enable_realistic_gap_fill,
         verbose=verbose,
     )
 
@@ -177,7 +262,7 @@ def run_backtest(
     net_pnl = final_val - initial_cash
     total_return_pct = (net_pnl / initial_cash) * 100
 
-    # 4. Extract Analyzer Metrics
+    # 4. Extract Analyzer Metrics & Full-Position Positive-Return Exit Win Rate
     sharpe_dict = strat.analyzers.sharpe.get_analysis()
     sharpe_val = sharpe_dict.get("sharperatio", np.nan)
 
@@ -188,14 +273,26 @@ def run_backtest(
     ret_dict = strat.analyzers.returns.get_analysis()
     cagr = ret_dict.get("rnorm100", np.nan)
 
-    trades_dict = strat.analyzers.trades.get_analysis()
-    total_trades = trades_dict.get("total", {}).get("closed", 0)
-    won_trades = trades_dict.get("won", {}).get("total", 0)
-    lost_trades = trades_dict.get("lost", {}).get("total", 0)
-    win_rate = (won_trades / total_trades * 100) if total_trades > 0 else np.nan
-    pnl_won = trades_dict.get("won", {}).get("pnl", {}).get("total", 0.0)
-    pnl_lost = abs(trades_dict.get("lost", {}).get("pnl", {}).get("total", 1e-8))
-    profit_factor = (pnl_won / pnl_lost) if pnl_lost > 0 else np.nan
+    trades_df = pd.DataFrame(strat.closed_trades)
+    if not trades_df.empty:
+        # Group by (symbol, entry_date) so 50% Target-1 partial booking + final exit = 1 full position
+        full_pos_df = trades_df.groupby(["symbol", "entry_date"], as_index=False)["net_pnl"].sum()
+        total_trades = len(full_pos_df)
+        won_trades = int((full_pos_df["net_pnl"] > 0).sum())
+        lost_trades = int((full_pos_df["net_pnl"] <= 0).sum())
+        win_rate = (won_trades / total_trades * 100) if total_trades > 0 else np.nan
+        pnl_won = float(full_pos_df[full_pos_df["net_pnl"] > 0]["net_pnl"].sum())
+        pnl_lost = float(abs(full_pos_df[full_pos_df["net_pnl"] <= 0]["net_pnl"].sum()))
+        profit_factor = (pnl_won / pnl_lost) if pnl_lost > 0 else np.nan
+    else:
+        trades_dict = strat.analyzers.trades.get_analysis()
+        total_trades = trades_dict.get("total", {}).get("closed", 0)
+        won_trades = trades_dict.get("won", {}).get("total", 0)
+        lost_trades = trades_dict.get("lost", {}).get("total", 0)
+        win_rate = (won_trades / total_trades * 100) if total_trades > 0 else np.nan
+        pnl_won = trades_dict.get("won", {}).get("pnl", {}).get("total", 0.0)
+        pnl_lost = abs(trades_dict.get("lost", {}).get("pnl", {}).get("total", 1e-8))
+        profit_factor = (pnl_won / pnl_lost) if pnl_lost > 0 else np.nan
 
     print("\n" + "=" * 65)
     print("BACKTRADER SIMULATION PERFORMANCE SUMMARY")
@@ -207,8 +304,8 @@ def run_backtest(
     print(f"Annualized Return:  {cagr:.2f}% CAGR")
     print(f"Annualized Sharpe:  {sharpe_val:.2f} (Risk-Free: 6.5%)")
     print(f"Max Drawdown:       {max_dd:.2f}% (Duration: {max_dd_len} bars)")
-    print(f"Total Closed Trades:{total_trades}")
-    print(f"Winning Trades:     {won_trades} ({win_rate:.1f}%)")
+    print(f"Total Closed Trades:{total_trades} (Full Cohort Positions)")
+    print(f"Winning Trades:     {won_trades} ({win_rate:.1f}% Positive-Return Exits)")
     print(f"Losing Trades:      {lost_trades}")
     print(f"Profit Factor:      {profit_factor:.2f}")
     print("=" * 65)
@@ -249,7 +346,6 @@ def run_backtest(
     print("✓ Saved summary metrics to Backtrader_Portfolio_Summary.csv")
 
     # Save detailed trade execution ledger
-    trades_df = pd.DataFrame(strat.closed_trades)
     if not trades_df.empty:
         trades_df.to_csv("backtest_trades_log.csv", index=False)
         print(f"✓ Saved {len(trades_df):,} detailed trades to backtest_trades_log.csv")
@@ -291,6 +387,7 @@ def plot_equity_curve(strat, initial_cash):
     ).set_index("Date")
     eq_df = eq_df[~eq_df.index.duplicated(keep="first")]
     eq_df["Strategy_Normalized"] = (eq_df["Portfolio"] / initial_cash) * 100
+    eq_df.to_csv("backtest_equity_curve.csv")
 
     # Load Nifty 50 benchmark
     benchmark_path = "Data/historical_data/data/NSE_NIFTY50-INDEX.parquet"
@@ -323,7 +420,7 @@ def plot_equity_curve(strat, initial_cash):
                 ls="--",
             )
             plt.title(
-                "SequenceAlpha: TFT Rolling Cohorts Strategy vs Nifty 50 (Event-Driven)",
+                "SequenceAlpha: AlphaHarvest-Trailing Strategy vs Nifty 50 (Event-Driven)",
                 fontsize=14,
                 fontweight="bold",
             )
@@ -332,9 +429,10 @@ def plot_equity_curve(strat, initial_cash):
             plt.grid(True, alpha=0.3)
             plt.legend(fontsize=11)
             plt.tight_layout()
-            plt.savefig("backtest_equity_curve.png", dpi=300)
+            os.makedirs("graphs", exist_ok=True)
+            plt.savefig("graphs/backtest_equity_curve.png", dpi=300)
             plt.close()
-            print("✓ Saved equity curve comparison to backtest_equity_curve.png")
+            print("✓ Saved equity curve comparison to graphs/backtest_equity_curve.png")
             return
 
     # Fallback plot without benchmark
@@ -342,22 +440,58 @@ def plot_equity_curve(strat, initial_cash):
     plt.plot(
         eq_df.index,
         eq_df["Strategy_Normalized"],
-        label="TFT Top-15 Strategy",
+        label="AlphaHarvest-Trailing Strategy",
         color="#1f77b4",
         lw=2,
     )
     plt.title(
-        "SequenceAlpha TFT Strategy: Equity Curve", fontsize=14, fontweight="bold"
+        "SequenceAlpha AlphaHarvest Strategy: Equity Curve", fontsize=14, fontweight="bold"
     )
     plt.xlabel("Date", fontsize=11)
     plt.ylabel("Portfolio Value (Indexed to 100)", fontsize=11)
     plt.grid(True, alpha=0.3)
     plt.legend(fontsize=11)
     plt.tight_layout()
-    plt.savefig("backtest_equity_curve.png", dpi=300)
+    os.makedirs("graphs", exist_ok=True)
+    plt.savefig("graphs/backtest_equity_curve.png", dpi=300)
     plt.close()
-    print("✓ Saved equity curve to backtest_equity_curve.png")
+    print("✓ Saved equity curve to graphs/backtest_equity_curve.png")
 
 
 if __name__ == "__main__":
-    run_backtest()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="SequenceAlpha Backtrader Simulation Engine")
+    parser.add_argument(
+        "--predictions",
+        type=str,
+        default=os.getenv("OOS_PREDICTIONS_CACHE", None),
+        help="Path to predictions parquet cache (default: Data/cache/tft_oos_predictions.parquet)",
+    )
+    parser.add_argument("--cash", type=float, default=1_000_000.0, help="Initial cash (₹)")
+    parser.add_argument("--cohort-size", type=int, default=3, help="Daily cohort size (default: 3)")
+    parser.add_argument("--total-positions", type=int, default=15, help="Total active positions (default: 15)")
+    parser.add_argument("--holding-bars", type=int, default=5, help="Holding bars (default: 5)")
+    parser.add_argument("--max-symbols", type=int, default=None, help="Filter to top N most frequent symbols")
+    parser.add_argument("--min-upside-skew", type=float, default=None, help="Minimum upside skew ratio (defaults to 0.0 for rank targets, 1.25 for return targets)")
+    parser.add_argument("--force-regenerate", action="store_true", help="Force regenerate predictions cache")
+    parser.add_argument("--no-regime-gate", action="store_true", help="Disable macro regime gating")
+    parser.add_argument("--no-vol-stop", action="store_true", help="Disable volatility-adaptive stops")
+    parser.add_argument("--no-strict-horizon", action="store_true", help="Disable strict Day-5 horizon liquidation")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose trade execution logging")
+    args = parser.parse_args()
+
+    run_backtest(
+        initial_cash=args.cash,
+        cohort_size=args.cohort_size,
+        total_positions=args.total_positions,
+        holding_bars=args.holding_bars,
+        max_symbols=args.max_symbols,
+        min_upside_skew=args.min_upside_skew,
+        force_regenerate=args.force_regenerate,
+        enable_regime_gate=not args.no_regime_gate,
+        use_vol_adaptive_stop=not args.no_vol_stop,
+        enforce_strict_horizon=not args.no_strict_horizon,
+        verbose=args.verbose,
+        predictions_path=args.predictions,
+    )

@@ -31,21 +31,7 @@ import pandas as pd
 from scipy.stats import pearsonr, spearmanr
 
 from Data.feature_engineering import build_training_set
-
-FEATURES = [
-    "Intraday_Spread",
-    "ATR-Ratio",
-    "Intraday_Spread_Zscore",
-    "RSI-close-score",
-    "relative_strength_60d",
-    "relative_strength_120d",
-    "Vol_Percentile_Rank",
-    "Beta_60D",
-    "Pct_52W_High",
-    "Returns_5D",
-    "Intraday_Return",
-    "EMA-Cross-Spread",
-]
+from Executables.model_execute import features as FEATURES
 
 
 TARGET = "Target"
